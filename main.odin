@@ -1,0 +1,4 @@
+package fastcgi
+
+main :: proc() {
+}
