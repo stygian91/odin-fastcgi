@@ -2,10 +2,13 @@ package platform
 
 import "base:runtime"
 import "core:io"
+import "core:log"
 import "core:mem"
 import "core:os"
 import "core:sys/posix"
 import "core:sys/unix"
+
+import c "../config"
 
 @(private)
 Socket :: distinct int
@@ -15,7 +18,22 @@ Error :: posix.Errno
 Socket_Length :: posix.socklen_t
 
 @(private, require_results)
-_socket :: proc(path: string) -> (sock: Socket, err: Error) {
+loop :: proc(cfg: ^c.Config, on_accept: Accept_Proc) -> (err: Error) {
+	serv_sock := create_and_listen(cfg.sock_path, cfg.backlog) or_return
+
+	for {
+		client_rwc, accept_err := accept_and_stream(serv_sock)
+		if accept_err != nil {
+			log.errorf("Accept error: %s", accept_err)
+			continue
+		}
+
+		on_accept(client_rwc)
+	}
+}
+
+@(private, require_results)
+socket :: proc(path: string) -> (sock: Socket, err: Error) {
 	result := unix.sys_socket(os.AF_UNIX, os.SOCK_STREAM, 0)
 	if result < 0 {
 		return 0, posix.get_errno()
@@ -24,25 +42,25 @@ _socket :: proc(path: string) -> (sock: Socket, err: Error) {
 }
 
 @(private, require_results)
-_create_and_listen :: proc(path: string, backlog: int) -> (sock: Socket, err: Error) {
-	sock = _socket(path) or_return
+create_and_listen :: proc(path: string, backlog: int) -> (sock: Socket, err: Error) {
+	sock = socket(path) or_return
 	addr := posix.sockaddr_un{}
-	_init_address(&addr, path) or_return
+	init_address(&addr, path) or_return
 
 	if os.exists(path) {
-		_convert_error(os.remove(path)) or_return
+		convert_error(os.remove(path)) or_return
 	}
 
-	_convert_error(os.bind(cast(os.Socket)sock, cast(^os.SOCKADDR)&addr, size_of(addr))) or_return
-	_convert_error(os.listen(cast(os.Socket)sock, backlog)) or_return
+	convert_error(os.bind(cast(os.Socket)sock, cast(^os.SOCKADDR)&addr, size_of(addr))) or_return
+	convert_error(os.listen(cast(os.Socket)sock, backlog)) or_return
 
 	return
 }
 
 @(private, require_results)
-_accept_and_stream :: proc(sock: Socket) -> (rwc: io.Read_Write_Closer, err: Error) {
+accept_and_stream :: proc(sock: Socket) -> (rwc: io.Read_Write_Closer, err: Error) {
 	cl_sock, cl_err := os.accept(cast(os.Socket)sock, nil, nil)
-	if err = _convert_error(cl_err); err != nil {return}
+	if err = convert_error(cl_err); err != nil {return}
 
 	stream := os.stream_from_handle(cast(os.Handle)cl_sock)
 	rwc = io.to_read_write_closer(stream)
@@ -51,7 +69,7 @@ _accept_and_stream :: proc(sock: Socket) -> (rwc: io.Read_Write_Closer, err: Err
 }
 
 @(private, require_results)
-_init_address :: proc(addr: ^posix.sockaddr_un, path: string) -> Error {
+init_address :: proc(addr: ^posix.sockaddr_un, path: string) -> Error {
 	if len(path) >= len(addr.sun_path) {
 		return .EINVAL
 	}
@@ -65,7 +83,7 @@ _init_address :: proc(addr: ^posix.sockaddr_un, path: string) -> Error {
 }
 
 @(private, require_results)
-_convert_error :: proc(os_err: os.Error) -> (err: Error) {
+convert_error :: proc(os_err: os.Error) -> (err: Error) {
 	if os_err == nil {
 		return .NONE
 	}
