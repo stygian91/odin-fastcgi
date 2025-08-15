@@ -21,8 +21,13 @@ _run :: proc() {
 		os.exit(1)
 	}
 	context.logger = logger
+	
+	if e := init_worker_processes(cfg.worker_count); e != nil {
+		log.fatalf("Failed to init workers: %s", e)
+		os.exit(1)
+	}
 
-	create_sock_err := loop(cfg, fcgi.on_client_accepted)
+	create_sock_err := accept_loop(cfg, fcgi.on_client_accepted)
 	if create_sock_err != nil {
 		log.fatalf("Failed to create/bind socket: %s", create_sock_err)
 		os.exit(1)

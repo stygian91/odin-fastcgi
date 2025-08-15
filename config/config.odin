@@ -9,13 +9,15 @@ import "core:strconv"
 import "core:strings"
 
 Config :: struct {
-	sock_path: string,
-	log_path:  string,
-	backlog:   int,
+	sock_path:    string,
+	log_path:     string,
+	backlog:      int,
+	worker_count: int,
 }
 
 DEFAULT_CONFIG :: Config {
 	backlog = 5,
+	worker_count = 4,
 }
 
 Error :: union #shared_nil {
@@ -60,6 +62,7 @@ load_from_file :: proc(path: string) -> (cfg: Config, err: Error) {
 	cfg.sock_path = _get_required(m, "sock_path") or_return
 	cfg.log_path = _get_required(m, "log_path") or_return
 	cfg.backlog = strconv.parse_int(m["backlog"], 10) or_else DEFAULT_CONFIG.backlog
+	cfg.worker_count = strconv.parse_int(m["worker_count"], 10) or_else DEFAULT_CONFIG.worker_count
 
 	return cfg, nil
 }
