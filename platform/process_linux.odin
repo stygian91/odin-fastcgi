@@ -61,8 +61,8 @@ init_child :: proc(n, nth_child: int, on_received: Received_Proc) {
 
 	msg := posix.msghdr{}
 	m_buffer := [256]u8{}
-	io := posix.iovec{iov_base = rawptr(uintptr(&m_buffer)), iov_len = size_of(m_buffer)}
-	c_buffer := [size_of(int)]u8{}
+	io := posix.iovec{iov_base = &m_buffer, iov_len = size_of(m_buffer)}
+	c_buffer := [256]u8{}
 	msg.msg_control = &c_buffer
 	msg.msg_controllen = size_of(c_buffer)
 	msg.msg_iov = &io
@@ -80,6 +80,7 @@ init_child :: proc(n, nth_child: int, on_received: Received_Proc) {
 		mem.copy(&client_sock, posix.CMSG_DATA(cmsg), size_of(client_sock))
 		log.infof("Client received fd: %+v", client_sock)
 
+		// TODO: create stream and move this in the fcgi module
 		fcgi_header: fcgi.Record_Header
 		if _, e := os.read_ptr(os.Handle(client_sock), &fcgi_header, size_of(fcgi_header)); e != nil {
 			log.errorf("Error reading from client: %s", e)

@@ -65,39 +65,19 @@ Cmsg_Type :: enum int {
 }
 
 main_on_client_accepted :: proc(client_sock: Socket) {
-	// defer os.close(os.Handle(client_sock))
+	defer os.close(os.Handle(client_sock))
 
 	log.infof("client accepted in main: %+v", client_sock)
-
-	// h: fcgi.Record_Header
-	// if _, e := os.read_ptr(os.Handle(client_sock), &h, size_of(h)); e != nil {
-	// 	log.errorf("here: %s", e)
-	// 	return
-	// }
-	//
-	// log.infof("here read: %+v", h)
-	// return
 
 	cs := client_sock
 
 	for i in 0 ..< len(SHARED) {
 		state := sync.atomic_load(&SHARED[i])
 		if state == .Idle {
-			// msg: linux.Msg_Hdr
-			// cmsg: posix.cmsghdr
-			// base := "FD"
-			// buf := [align_of(linux.Msg_Hdr) + align_of(int)]u8{}
-			// iovec := [1]linux.IO_Vec{{base = &base, len = 2}}
-			// msg.iov = iovec[:]
-			// msg.control = buf[:]
-			//
-			// if _, e := linux.sendmsg(linux.Fd(SOCKET_PAIRS[i][0]), &msg, {}); e != nil {
-			// 	log.errorf("Error while sending client socket FD to worker: %s", e)
-			// }
-
+			// TODO: calc buf size like CMSG_SPACE(sizeof(fd)) in C
 			buf := [256]u8{}
 			base := "FD"
-			iovec := posix.iovec{iov_base=rawptr(uintptr(&base)), iov_len=2}
+			iovec := posix.iovec{iov_base=raw_data(base), iov_len=2}
 			msg := posix.msghdr{}
 			msg.msg_iov = &iovec
 			msg.msg_iovlen = 1
@@ -105,12 +85,15 @@ main_on_client_accepted :: proc(client_sock: Socket) {
 			msg.msg_controllen = size_of(buf)
 
 			cmsg := posix.CMSG_FIRSTHDR(&msg)
+			if cmsg == nil {
+				log.errorf("CMSG_FIRSTHDR err: %s", posix.get_errno())
+				return
+			}
+
 			cmsg.cmsg_level = posix.SOL_SOCKET
 			cmsg.cmsg_type = posix.SCM_RIGHTS
 			cmsg.cmsg_len = size_of(posix.cmsghdr) + size_of(client_sock)
-			d := posix.CMSG_DATA(cmsg)
-			log.infof("CMSG_DATA: %v", d)
-			mem.copy(d, &cs, size_of(client_sock))
+			mem.copy(posix.CMSG_DATA(cmsg), &cs, size_of(cs))
 			msg.msg_controllen = cmsg.cmsg_len
 
 			log.infof("Main sendmsg to %d: %v", i, msg)
@@ -119,12 +102,6 @@ main_on_client_accepted :: proc(client_sock: Socket) {
 				log.errorf("Error in main sendmsg: %s", posix.get_errno())
 			}
 
-			log.infof("Main sendmsg to %d res: %d", i, res)
-
-			// writer := io.to_writer(os.stream_from_handle(os.Handle(SOCKET_PAIRS[i][0])))
-			// if _, e := io.write_ptr(writer, &cs, size_of(cs)); e != nil {
-			// 	log.errorf("Error while sending client socket FD to worker: %s", e)
-			// }
 			return
 		}
 	}
