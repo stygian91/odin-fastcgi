@@ -24,15 +24,16 @@ Socket_Length :: posix.socklen_t
 @(require_results)
 accept_loop :: proc(cfg: ^c.Config, on_accept: Accept_Proc) -> (err: Error) {
 	serv_sock := create_and_listen(cfg.sock_path, cfg.backlog) or_return
+	log.infof("Listening on socket: %s", cfg.sock_path)
 
 	for {
-		client_rwc, accept_err := accept_and_stream(serv_sock)
-		if accept_err != nil {
-			log.errorf("Accept error: %s", accept_err)
+		cl_sock, cl_sock_err := os.accept(cast(os.Socket)serv_sock, nil, nil)
+		if cl_sock_err != nil {
+			log.errorf("Error while accepting socket on main: %s", cl_sock_err)
 			continue
 		}
 
-		on_accept(client_rwc)
+		on_accept(Socket(cl_sock))
 	}
 }
 

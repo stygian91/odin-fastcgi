@@ -1,11 +1,15 @@
 package platform
 
 import "base:runtime"
-import "core:mem"
 import "core:os"
+import "core:sync"
 import "core:io"
+import "core:mem"
+import "core:log"
 import "core:sys/linux"
 import "core:sys/posix"
+
+import "../fcgi"
 
 Child_State :: enum int {
 	Idle,
@@ -20,14 +24,14 @@ SOCKET_PAIRS: [dynamic][2]posix.FD
 
 // TODO: add callback(s) for parent/children?
 @(require_results)
-init_worker_processes :: proc(n: int) -> (err: Error) {
+init_worker_processes :: proc(n: int, on_received: Received_Proc) -> (err: Error) {
 	SHARED = mmap_shared_slice(Child_State, n) or_return
 	SOCKET_PAIRS = init_socket_pairs(n) or_return
 
 	for i in 0 ..< n {
 		pid := os.fork() or_return
 		if pid == 0 {
-			init_child(n, i)
+			init_child(n, i, on_received)
 			os.exit(0)
 		}
 
@@ -39,7 +43,8 @@ init_worker_processes :: proc(n: int) -> (err: Error) {
 }
 
 @(private)
-init_child :: proc(n, nth_child: int) {
+init_child :: proc(n, nth_child: int, on_received: Received_Proc) {
+	// close other processes' sockets
 	for i in 0..<n {
 		if i != nth_child {
 			posix.close(SOCKET_PAIRS[i][0])
@@ -47,18 +52,57 @@ init_child :: proc(n, nth_child: int) {
 		}
 	}
 
+	// close unused part of current worker's pair
 	posix.close(SOCKET_PAIRS[nth_child][0])
-	sock_stream := os.stream_from_handle(transmute(os.Handle)SOCKET_PAIRS[nth_child][1])
+
+	sock_stream := os.stream_from_handle(os.Handle(SOCKET_PAIRS[nth_child][1]))
 	sock_rwc := io.to_read_write_closer(sock_stream)
+	client_sock: Socket
+
+	msg := posix.msghdr{}
+	m_buffer := [256]u8{}
+	io := posix.iovec{iov_base = rawptr(uintptr(&m_buffer)), iov_len = size_of(m_buffer)}
+	c_buffer := [size_of(int)]u8{}
+	msg.msg_control = &c_buffer
+	msg.msg_controllen = size_of(c_buffer)
+	msg.msg_iov = &io
+	msg.msg_iovlen = 1
+
 	for {
-		client_sock: Socket
-		read_bytes, err := io.read_ptr(sock_rwc, &client_sock, size_of(client_sock))
-		if err != nil {
-			// TODO:
+		log.infof("worker %d listening for fd", nth_child)
+		if res := posix.recvmsg(SOCKET_PAIRS[nth_child][1], &msg, {}); res < 0 {
+			log.errorf("Error in worker %d recvmsg: %s", nth_child, posix.get_errno())
+			continue
 		}
-		client_stream := os.stream_from_handle(cast(os.Handle)client_sock)
-		client_rwc := io.to_read_write_closer(client_stream)
-		// TODO:
+
+		cmsg := posix.CMSG_FIRSTHDR(&msg)
+
+		mem.copy(&client_sock, posix.CMSG_DATA(cmsg), size_of(client_sock))
+		log.infof("Client received fd: %+v", client_sock)
+
+		fcgi_header: fcgi.Record_Header
+		if _, e := os.read_ptr(os.Handle(client_sock), &fcgi_header, size_of(fcgi_header)); e != nil {
+			log.errorf("Error reading from client: %s", e)
+			continue
+		}
+
+		log.infof("Received header: %+v", fcgi_header)
+
+		// receive client socket fd from main process
+		// _, err := io.read_ptr(sock_rwc, &client_sock, size_of(client_sock))
+		// if err != nil {
+		// 	log.errorf("error while receiving client FD: %s", err)
+		// 	continue
+		// }
+		//
+		// log.infof("client received fd: %+v", client_sock)
+		//
+		// sync.atomic_store(&SHARED[nth_child], .Busy)
+		// defer sync.atomic_store(&SHARED[nth_child], .Idle)
+		//
+		// client_stream := os.stream_from_handle(cast(os.Handle)client_sock)
+		// client_rwc := io.to_read_write_closer(client_stream)
+		// on_received(client_rwc)
 	}
 }
 
