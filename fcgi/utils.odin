@@ -1,5 +1,6 @@
 package fcgi
 
+import "core:io"
 import "core:strings"
 
 combine_u16 :: proc(b1, b0: u8) -> u16 {
@@ -58,4 +59,13 @@ parse_params :: proc(buf: []u8) -> (res: map[string]string) {
 	}
 
 	return res
+}
+
+@(require_results)
+validate_content_length :: #force_inline proc "contextless" (
+	content_len, expected_len: int,
+) -> (
+	err: Fcgi_Error,
+) {
+	return nil if content_len == expected_len else .Invalid_Record
 }

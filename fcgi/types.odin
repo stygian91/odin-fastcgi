@@ -1,6 +1,6 @@
 package fcgi
 
-Record_Header :: struct #packed {
+Header :: struct #packed {
 	version:           u8,
 	type:              Record_Type,
 	request_id_b1:     u8,
@@ -25,6 +25,11 @@ Record_Type :: enum u8 {
 	Unknown_Type      = 11,
 }
 
+Record :: struct {
+	header: Header,
+	body:   Body,
+}
+
 Body :: union {
 	Begin_Request_Body,
 	End_Request_Body,
@@ -35,11 +40,11 @@ Body :: union {
 Begin_Request_Body :: struct #packed {
 	role_b1:  u8,
 	role_b0:  u8,
-	flags:    bit_set[Begin_Request_Body_Flags;u8],
+	flags:    bit_set[Begin_Request_Body_Flag;u8],
 	reserved: [5]u8,
 }
 
-Begin_Request_Body_Flags :: enum u8 {
+Begin_Request_Body_Flag :: enum u8 {
 	Keep_Conn = 1,
 }
 
