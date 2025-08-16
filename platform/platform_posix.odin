@@ -46,6 +46,9 @@ _run :: proc() {
 	}
 	context.logger = logger
 
+	// ignore sigpipe signal
+	posix.signal(.SIGPIPE, cast(proc "c" (posix.Signal)) posix.SIG_IGN)
+
 	if e := init_worker_processes(cfg.worker_count); e != nil {
 		log.fatalf("Failed to init workers: %s", e)
 		posix.exit(1)
@@ -70,8 +73,11 @@ main_on_client_accepted :: proc(client_sock: posix.FD) {
 			send_err := send_fd(client_sock, SOCKET_PAIRS[i][0])
 			if send_err != nil {
 				log.errorf("Error in main sendmsg: %s", posix.get_errno())
+				continue
 			}
 		}
+
+		return
 	}
 
 	log.error("Did not find an idle worker to handle client")

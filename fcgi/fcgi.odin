@@ -65,8 +65,11 @@ receive_body :: proc(client: RWC, header: Record_Header) -> (body: Body, err: Er
 		io.read_at_least(client, PADDING_BUF[:], int(header.padding_length))
 	}
 
+	content_len := combine_u16(header.content_length_b1, header.content_length_b0)
+
 	#partial switch header.type {
 	case:
+		io.read_at_least(client, CONTENT_BUF[:], int(content_len))
 		err = .Unknown_Record_Type
 		return
 	}

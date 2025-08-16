@@ -2,6 +2,10 @@ package fcgi
 
 import "core:strings"
 
+combine_u16 :: proc(b1, b0: u8) -> u16 {
+	return (cast(u16)b1 << 8) + cast(u16)b0
+}
+
 parse_key_value_pair :: proc(buf: []u8) -> (n: int, key: string, value: string) {
 	if len(buf) == 0 {return}
 
