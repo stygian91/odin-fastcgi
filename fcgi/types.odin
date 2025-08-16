@@ -34,6 +34,7 @@ Body :: union {
 	Begin_Request_Body,
 	End_Request_Body,
 	Unknown_Type_Body,
+	Raw_Body,
 	// TODO: other types
 }
 
@@ -62,6 +63,8 @@ End_Request_Body :: struct #packed {
 	protocol_status: Protocol_Status,
 	reserved:        [3]u8,
 }
+
+Raw_Body :: distinct [dynamic]u8
 
 Protocol_Status :: enum u8 {
 	Request_Complete = 0,

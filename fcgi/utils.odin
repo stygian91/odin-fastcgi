@@ -3,8 +3,40 @@ package fcgi
 import "core:io"
 import "core:strings"
 
-combine_u16 :: proc(b1, b0: u8) -> u16 {
+combine_u16 :: #force_inline proc "contextless" (b1, b0: u8) -> u16 {
 	return (cast(u16)b1 << 8) + cast(u16)b0
+}
+
+split_u16 :: proc "contextless" (num: u16) -> (b1, b0: u8) {
+	tmp := (num & 0b1111_1111_0000_0000) >> 8
+	b1 = cast(u8)tmp
+	tmp = num & 0b1111_1111
+	b0 = cast(u8)tmp
+	return
+}
+
+parse_params :: proc(buf: []u8) -> (res: map[string]string) {
+	rem := buf[:]
+	res = make(map[string]string)
+
+	for {
+		if len(rem) == 0 {return}
+		n, k, v := parse_key_value_pair(rem)
+		if n == 0 {return}
+		res[k] = v
+		rem = rem[n:]
+	}
+
+	return res
+}
+
+@(require_results)
+validate_content_length :: #force_inline proc "contextless" (
+	content_len, expected_len: int,
+) -> (
+	err: Fcgi_Error,
+) {
+	return nil if content_len == expected_len else .Invalid_Record
 }
 
 parse_key_value_pair :: proc(buf: []u8) -> (n: int, key: string, value: string) {
@@ -39,33 +71,8 @@ parse_key_value_pair :: proc(buf: []u8) -> (n: int, key: string, value: string) 
 
 	key = strings.string_from_ptr(&buf[curr], int(key_len))
 	curr += int(key_len)
-
 	value = strings.string_from_ptr(&buf[curr], int(val_len))
 	n = curr + int(val_len)
 
 	return
-}
-
-parse_params :: proc(buf: []u8) -> (res: map[string]string) {
-	rem := buf[:]
-	res = make(map[string]string)
-
-	for {
-		if len(rem) == 0 {return}
-		n, k, v := parse_key_value_pair(rem)
-		if n == 0 {return}
-		res[k] = v
-		rem = rem[n:]
-	}
-
-	return res
-}
-
-@(require_results)
-validate_content_length :: #force_inline proc "contextless" (
-	content_len, expected_len: int,
-) -> (
-	err: Fcgi_Error,
-) {
-	return nil if content_len == expected_len else .Invalid_Record
 }
