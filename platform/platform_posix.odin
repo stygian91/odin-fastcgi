@@ -17,24 +17,11 @@ import "../logging"
 
 DEFAULT_CONFIG_PATH :: "/etc/odin-fcgi/config.ini"
 
-// Called when a new client was accepted in the main process
-Accept_Proc :: proc(client_sock: posix.FD)
-
-// Called when a new client was received in a worker process
-Received_Proc :: proc(client: io.Read_Write_Closer)
-
-@(private)
-Socket :: distinct int
-
 @(private)
 Error :: union #shared_nil {
 	runtime.Allocator_Error,
 	posix.Errno,
 }
-
-@(private)
-Socket_Length :: posix.socklen_t
-
 
 Child_State :: enum int {
 	Idle,
@@ -59,12 +46,12 @@ _run :: proc() {
 	}
 	context.logger = logger
 
-	if e := init_worker_processes(cfg.worker_count, fcgi.on_client_accepted); e != nil {
+	if e := init_worker_processes(cfg.worker_count); e != nil {
 		log.fatalf("Failed to init workers: %s", e)
 		posix.exit(1)
 	}
 
-	create_sock_err := accept_loop(cfg, main_on_client_accepted)
+	create_sock_err := accept_loop(cfg)
 	if create_sock_err != nil {
 		log.fatalf("Failed to create/bind socket: %s", create_sock_err)
 		posix.exit(1)
@@ -73,9 +60,9 @@ _run :: proc() {
 
 main_on_client_accepted :: proc(client_sock: posix.FD) {
 	cs := client_sock
-	// defer posix.close(client_sock)
+	defer posix.close(client_sock)
 
-	log.infof("client accepted in main: %+v", client_sock)
+	log.debugf("client accepted in main: %+v", client_sock)
 
 	for i in 0 ..< len(SHARED) {
 		state := sync.atomic_load(&SHARED[i])
@@ -128,7 +115,7 @@ send_fd :: proc(fd: posix.FD, sock: posix.FD) -> posix.Errno {
 }
 
 @(require_results)
-accept_loop :: proc(cfg: ^conf.Config, on_accept: Accept_Proc) -> (err: posix.Errno) {
+accept_loop :: proc(cfg: ^conf.Config) -> (err: posix.Errno) {
 	serv_sock := create_and_listen(cfg.sock_path, cast(c.int)cfg.backlog) or_return
 	log.infof("Listening on socket: %s", cfg.sock_path)
 
@@ -139,7 +126,7 @@ accept_loop :: proc(cfg: ^conf.Config, on_accept: Accept_Proc) -> (err: posix.Er
 			continue
 		}
 
-		on_accept(cl_sock)
+		main_on_client_accepted(cl_sock)
 	}
 }
 
@@ -182,7 +169,7 @@ create_and_listen :: proc(path: string, backlog: c.int) -> (sock: posix.FD, err:
 }
 
 @(require_results)
-init_worker_processes :: proc(n: int, on_received: Received_Proc) -> (err: Error) {
+init_worker_processes :: proc(n: int) -> (err: Error) {
 	SHARED = mmap_shared_slice(Child_State, n) or_return
 	SOCKET_PAIRS = init_socket_pairs(n) or_return
 
@@ -193,7 +180,7 @@ init_worker_processes :: proc(n: int, on_received: Received_Proc) -> (err: Error
 		}
 
 		if pid == 0 {
-			init_child(n, i, on_received)
+			init_child(n, i)
 			posix.exit(0)
 		}
 
@@ -205,54 +192,46 @@ init_worker_processes :: proc(n: int, on_received: Received_Proc) -> (err: Error
 }
 
 @(private)
-init_child :: proc(n, nth_child: int, on_received: Received_Proc) {
+init_child :: proc(n, child_number: int) {
 	// close other processes' sockets
 	for i in 0 ..< n {
-		if i != nth_child {
+		if i != child_number {
 			posix.close(SOCKET_PAIRS[i][0])
 			posix.close(SOCKET_PAIRS[i][1])
 		}
 	}
 
 	// close unused part of current worker's pair
-	posix.close(SOCKET_PAIRS[nth_child][0])
+	posix.close(SOCKET_PAIRS[child_number][0])
 
-	client_sock: Socket
+	client_sock: posix.FD
 	msg := posix.msghdr{}
 	m_buffer := [256]u8{}
-	io := posix.iovec {
+	iovec := posix.iovec {
 		iov_base = &m_buffer,
 		iov_len  = size_of(m_buffer),
 	}
 	c_buffer := [256]u8{}
 	msg.msg_control = &c_buffer
 	msg.msg_controllen = size_of(c_buffer)
-	msg.msg_iov = &io
+	msg.msg_iov = &iovec
 	msg.msg_iovlen = 1
 
 	for {
-		log.infof("worker %d listening for fd", nth_child)
-		if res := posix.recvmsg(SOCKET_PAIRS[nth_child][1], &msg, {}); res < 0 {
-			log.errorf("Error in worker %d recvmsg: %s", nth_child, posix.get_errno())
+		log.debugf("worker %d listening for fd", child_number)
+
+		if res := posix.recvmsg(SOCKET_PAIRS[child_number][1], &msg, {}); res < 0 {
+			log.errorf("Error in worker %d recvmsg: %s", child_number, posix.get_errno())
 			continue
 		}
-
-		defer sync.atomic_store(&SHARED[nth_child], .Idle)
+		defer sync.atomic_store(&SHARED[child_number], .Idle)
 
 		cmsg := posix.CMSG_FIRSTHDR(&msg)
-
 		mem.copy(&client_sock, posix.CMSG_DATA(cmsg), size_of(client_sock))
-		log.infof("Client %d received fd: %+v", nth_child, client_sock)
+		log.debugf("Client %d received fd: %+v", child_number, client_sock)
 
-		// TODO: create stream and move this in the fcgi module
-		// fcgi_header: fcgi.Record_Header
-		// if _, e := os.read_ptr(os.Handle(client_sock), &fcgi_header, size_of(fcgi_header));
-		//    e != nil {
-		// 	log.errorf("Error reading from client: %s", e)
-		// 	continue
-		// }
-		//
-		// log.infof("Received header: %+v", fcgi_header)
+		stream := os.stream_from_handle(os.Handle(client_sock))
+		fcgi.on_client_accepted(io.to_read_write_closer(stream))
 	}
 }
 

@@ -25,6 +25,13 @@ Record_Type :: enum u8 {
 	Unknown_Type      = 11,
 }
 
+Body :: union {
+	Begin_Request_Body,
+	End_Request_Body,
+	Unknown_Type_Body,
+	// TODO: other types
+}
+
 Begin_Request_Body :: struct #packed {
 	role_b1:  u8,
 	role_b0:  u8,

@@ -1,27 +1,94 @@
 package fcgi
 
 import "core:io"
-import "core:os"
 import "core:log"
+import "core:os"
+
+VERSION :: 1
+
+Error :: union #shared_nil {
+	io.Error,
+	Fcgi_Error,
+}
+
+Fcgi_Error :: enum {
+	None,
+	Unknown_Record_Type,
+}
+
+@(private)
+PADDING_BUF := [256]u8{}
+
+@(private)
+CONTENT_BUF_LEN :: 1 << 16
+
+@(private)
+CONTENT_BUF := [CONTENT_BUF_LEN]u8{}
+
+RWC :: io.Read_Write_Closer
 
 // TODO: use arena
-on_client_accepted :: proc(client: io.Read_Write_Closer) {
+on_client_accepted :: proc(client: RWC) {
 	defer io.close(client)
 
-	h := os.Handle(uintptr(client.data))
-	log.infof("worker received client fd: %+v", h)
+	if err := process_record(client); err != nil {
+		// TODO: disambiguate errors and add more info to log
+		log.errorf("Error while processing request: %s", err)
+	}
+}
 
+@(require_results)
+process_record :: proc(client: RWC) -> (err: Error) {
 	header: Record_Header
 
-	if _, e := os.read_ptr(h, &header, size_of(header)); e != nil {
-		log.errorf("Error while reading record header: %s", e)
+	_ = io.read_ptr(client, &header, size_of(header)) or_return
+	log.debugf("Received record header: %+v", header)
+
+	body, recv_body_err := receive_body(client, header)
+	if recv_body_err != nil {
+		if recv_body_err == .Unknown_Record_Type {
+			if e := send_unkown_type_response(client, header); e != nil {
+				log.errorf("Error while sending \"Unknown type\" response: %s", e)
+			}
+		}
+
+		err = recv_body_err
 		return
 	}
 
-	// if _, e := io.read_ptr(client, &header, size_of(header)); e != nil {
-	// 	log.errorf("Error while reading record header: %s", e)
-	// 	return
-	// }
+	return
+}
 
-	// log.infof("Received record header: %+v", header)
+@(require_results)
+receive_body :: proc(client: RWC, header: Record_Header) -> (body: Body, err: Error) {
+	defer if header.padding_length > 0 {
+		io.read_at_least(client, PADDING_BUF[:], int(header.padding_length))
+	}
+
+	#partial switch header.type {
+	case:
+		err = .Unknown_Record_Type
+		return
+	}
+
+	return
+}
+
+send_unkown_type_response :: proc(client: RWC, header_in: Record_Header) -> (err: Error) {
+	header_out := Record_Header {
+		version           = VERSION,
+		type              = .Unknown_Type,
+		request_id_b1     = header_in.request_id_b1,
+		request_id_b0     = header_in.request_id_b0,
+		content_length_b0 = size_of(Unknown_Type_Body),
+	}
+
+	body := Unknown_Type_Body {
+		type = header_in.type,
+	}
+
+	_ = io.write_ptr(client, &header_out, size_of(header_out)) or_return
+	_ = io.write_ptr(client, &body, size_of(body)) or_return
+
+	return
 }
