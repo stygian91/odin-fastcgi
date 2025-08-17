@@ -25,7 +25,10 @@ RWC :: io.Read_Write_Closer
 
 // TODO: use arena
 on_client_accepted :: proc(client: RWC) {
-	defer io.close(client)
+	defer {
+		io.close(client)
+		io.flush(client)
+	}
 
 	header: Header
 
@@ -42,14 +45,6 @@ on_client_accepted :: proc(client: RWC) {
 			header = rec.header
 			break
 		}
-
-		// if rec.header.type == .Stdin &&
-		//    rec.header.content_length_b0 == 0 &&
-		//    rec.header.content_length_b1 == 0
-		// {
-		// 	header = rec.header
-		// 	break
-		// }
 	}
 
 	// TODO: set up proper callback instead of placeholder response
@@ -63,16 +58,12 @@ on_client_accepted :: proc(client: RWC) {
 	if e := send_end_request(client, header); e != nil {
 		log.errorf("Error while sending end request: %s", e)
 	}
-
-	io.flush(client)
 }
 
 @(require_results)
 receive_record :: proc(client: RWC) -> (record: Record, err: Error) {
 	header: Header
 	_ = io.read_ptr(client, &header, size_of(header)) or_return
-
-	log.debugf("Received record header: %+v", header)
 
 	body := receive_body(client, header) or_return
 
@@ -103,6 +94,7 @@ receive_body :: proc(client: RWC, header: Header) -> (body: Body, err: Error) {
 	}
 
 	content_len := int(combine_u16(header.content_length_b1, header.content_length_b0))
+	log.debugf("receive_body: %+v", header)
 
 	#partial switch header.type {
 	case .Begin_Request:
