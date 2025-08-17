@@ -91,7 +91,7 @@ serialize_key_value_pair :: proc(sb: ^strings.Builder, key, value: string) -> (e
 	if len(key) <= 0b0111_1111 {
 		strings.write_byte(sb, byte(len(key)))
 	} else if len(key) <= MAX_4B {
-		write_u32(sb, u32(len(key)))
+		write_u32(sb, u32(len(key)) | (1 << 31))
 	} else {
 		return .Key_Too_Large
 	}
@@ -101,7 +101,7 @@ serialize_key_value_pair :: proc(sb: ^strings.Builder, key, value: string) -> (e
 	if len(value) <= 0b0111_1111 {
 		strings.write_byte(sb, byte(len(value)))
 	} else if len(value) <= MAX_4B {
-		write_u32(sb, u32(len(value)))
+		write_u32(sb, u32(len(value)) | (1 << 31))
 	} else {
 		return .Value_Too_Large
 	}
