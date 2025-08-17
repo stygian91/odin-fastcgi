@@ -7,7 +7,7 @@ combine_u16 :: #force_inline proc "contextless" (b1, b0: u8) -> u16 {
 	return (cast(u16)b1 << 8) + cast(u16)b0
 }
 
-split_u16 :: proc "contextless" (num: u16) -> (b1, b0: u8) {
+split_u16 :: #force_inline proc "contextless" (num: u16) -> (b1, b0: u8) {
 	tmp := (num & 0b1111_1111_0000_0000) >> 8
 	b1 = cast(u8)tmp
 	tmp = num & 0b1111_1111
@@ -15,19 +15,16 @@ split_u16 :: proc "contextless" (num: u16) -> (b1, b0: u8) {
 	return
 }
 
-parse_params :: proc(buf: []u8) -> (res: map[string]string) {
+parse_params :: proc(buf: []u8, params: ^map[string]string) {
 	rem := buf[:]
-	res = make(map[string]string)
 
 	for {
 		if len(rem) == 0 {return}
 		n, k, v := parse_key_value_pair(rem)
 		if n == 0 {return}
-		res[k] = v
+		params[k] = v
 		rem = rem[n:]
 	}
-
-	return res
 }
 
 @(require_results)

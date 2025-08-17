@@ -2,26 +2,19 @@ package fcgi
 
 import "core:io"
 import "core:log"
-import "core:os"
 import "core:strings"
 
 VERSION :: 1
 
-Error :: union #shared_nil {
-	io.Error,
-	Fcgi_Error,
-}
-
-Fcgi_Error :: enum {
-	None,
-	Unknown_Record_Type,
-	Invalid_Record,
-}
+@(private)
+CONTENT_BUF := [1 << 16]u8{}
 
 @(private)
 PADDING_BUF := [256]u8{}
 
 RWC :: io.Read_Write_Closer
+
+PARAMS_INITIAL_RESERVE :: 40
 
 // TODO: use arena
 on_client_accepted :: proc(client: RWC) {
@@ -30,100 +23,104 @@ on_client_accepted :: proc(client: RWC) {
 		io.flush(client)
 	}
 
-	header: Header
-
-	for {
-		// TODO: build up state, don't just throw the records away
-		rec, recv_err := receive_record(client)
-		if recv_err != nil {
-			// TODO: disambiguate errors and add more info to log
-			log.errorf("Error while processing request: %s", recv_err)
-			if recv_err == .EOF {return}
-		}
-
-		if rec.header.type == .Params {
-			header = rec.header
-			break
-		}
+	request := Request {
+		// we preallocate the size based on rough estimate of how many params are usually in a request
+		// the estimate is based on observation of a request sent from nginx
+		// the map can grow if need be
+		params = make(map[string]string, PARAMS_INITIAL_RESERVE),
 	}
 
-	// TODO: set up proper callback instead of placeholder response
+	for {
+		done, read_err := read_record_into_request(client, &request)
+		if read_err != nil {
+			log.errorf("Error while reading record into request: %s", read_err)
+			// TODO: disambiguate errors and add more info to log
+			// TODO: sending any potential responses back to the web server
+			return
+		}
+
+		log.debugf("req: %+v", request)
+
+		if done {break}
+	}
+
+	log.debugf("Received request: %+v", request)
+
 	sb: strings.Builder
 	strings.write_string(&sb, "Content-Type: text/plain\r\n\r\nfoobar")
 
-	if e := send_stdout(client, header, sb); e != nil {
-		log.errorf("Error while sending stdout: %s", e)
+	if e := send_stdout(client, request.id, sb); e != nil {
+		log.errorf("error in send_stdout: %s", e)
+		return
 	}
 
-	if e := send_end_request(client, header); e != nil {
-		log.errorf("Error while sending end request: %s", e)
+	if e := send_end_request(client, request.id); e != nil {
+		log.errorf("error in send_end_request: %s", e)
+		return
 	}
+
+	// TODO: set up proper callback instead of placeholder response
 }
 
-@(require_results)
-receive_record :: proc(client: RWC) -> (record: Record, err: Error) {
+read_record_into_request :: proc(client: RWC, req: ^Request) -> (done: bool, err: Error) {
+	read_bytes, n := 0, 0
 	header: Header
-	_ = io.read_ptr(client, &header, size_of(header)) or_return
+	log.debug("waiting on header")
+	_ = io.read_ptr(client, &header, size_of(Header)) or_return
+	content_len := int(combine_u16(header.content_length_b1, header.content_length_b0))
 
-	body := receive_body(client, header) or_return
-
-	// TODO: move this type of logic up
-	// if recv_body_err != nil {
-	// 	if recv_body_err == .Unknown_Record_Type {
-	// 		if e := send_unkown_type_response(client, header); e != nil {
-	// 			log.errorf("Error while sending \"Unknown type\" response: %s", e)
-	// 		}
-	// 	}
-	//
-	// 	err = recv_body_err
-	// 	return
-	// }
-
-	record.header = header
-	record.body = body
-
-	// log.debugf("Received record: %+v", record)
-
-	return
-}
-
-@(require_results)
-receive_body :: proc(client: RWC, header: Header) -> (body: Body, err: Error) {
-	defer if header.padding_length > 0 {
-		io.read_at_least(client, PADDING_BUF[:], int(header.padding_length))
+	defer if read_bytes < int(header.padding_length) + content_len {
+		remaining := content_len + int(header.padding_length) - read_bytes
+		log.debugf("reading padding: %d", remaining)
+		if n2, e := io.read_at_least(client, PADDING_BUF[:], remaining); e != nil {
+			log.errorf("error while reading padding: %s; read n bytes: %d", e, n2)
+		}
 	}
 
-	content_len := int(combine_u16(header.content_length_b1, header.content_length_b0))
-	log.debugf("receive_body: %+v", header)
+	log.debugf("header: %+v", header)
 
 	#partial switch header.type {
 	case .Begin_Request:
 		validate_content_length(content_len, size_of(Begin_Request_Body)) or_return
 		b: Begin_Request_Body
-		_ = io.read_ptr(client, &b, content_len) or_return
-		body = b
+		n = io.read_ptr(client, &b, content_len) or_return
+		req.id = combine_u16(header.request_id_b1, header.request_id_b0)
+		// if the protocol uses 2 bytes for the roles but there are currently only 3 roles
+		req.role = cast(Role)b.role_b0
+		req.flags = b.flags
 
-	case .Params, .Stdin:
-		buf := make([dynamic]u8, content_len)
-		_ = io.read_at_least(client, buf[:], content_len) or_return
-		body = cast(Raw_Body)buf
+	case .Params:
+		n = io.read_at_least(client, CONTENT_BUF[:], content_len) or_return
+		parse_params(CONTENT_BUF[:content_len], &req.params)
+		log.debug("after parse")
+		// done = true
+
+	case .Stdin:
+		n = io.read_at_least(client, CONTENT_BUF[:], content_len) or_return
+		old_len := len(req.stdin)
+		resize(&req.stdin, old_len + content_len)
+		copy(req.stdin[old_len:], CONTENT_BUF[:content_len])
 
 	case:
-		buf := make([dynamic]u8, content_len)
-		io.read_at_least(client, buf[:], content_len)
+		log.debug("default case")
+		n = io.read_at_least(client, CONTENT_BUF[:], content_len) or_return
 		err = .Unknown_Record_Type
 	}
+
+	read_bytes += n
+	log.debug("after switch")
 
 	return
 }
 
 @(require_results)
-send_stdout :: proc(client: RWC, header_in: Header, sb: strings.Builder) -> (err: Error) {
+send_stdout :: proc(client: RWC, req_id: u16, sb: strings.Builder) -> (err: Error) {
 	// TODO: if the data is larger than max u16 len - split it
+	req_id_b1, req_id_b0 := split_u16(req_id)
 
 	h := Header {
-		request_id_b1 = header_in.request_id_b1,
-		request_id_b0 = header_in.request_id_b0,
+		request_id_b1 = req_id_b1,
+		request_id_b0 = req_id_b0,
 		version       = VERSION,
 		type          = .Stdout,
 	}
@@ -142,11 +139,13 @@ send_stdout :: proc(client: RWC, header_in: Header, sb: strings.Builder) -> (err
 }
 
 // TODO: statuses?
-send_end_request :: proc(client: RWC, header_in: Header) -> (err: Error) {
+send_end_request :: proc(client: RWC, req_id: u16) -> (err: Error) {
+	req_id_b1, req_id_b0 := split_u16(req_id)
+
 	header_out := Header {
 		version           = VERSION,
-		request_id_b1     = header_in.request_id_b1,
-		request_id_b0     = header_in.request_id_b0,
+		request_id_b1     = req_id_b1,
+		request_id_b0     = req_id_b0,
 		type              = .End_Request,
 		content_length_b0 = u8(size_of(End_Request_Body)),
 	}
@@ -158,17 +157,19 @@ send_end_request :: proc(client: RWC, header_in: Header) -> (err: Error) {
 	return
 }
 
-send_unkown_type :: proc(client: RWC, header_in: Header) -> (err: Error) {
+send_unkown_type :: proc(client: RWC, req_id: u16, type: Record_Type) -> (err: Error) {
+	req_id_b1, req_id_b0 := split_u16(req_id)
+
 	header_out := Header {
 		version           = VERSION,
 		type              = .Unknown_Type,
-		request_id_b1     = header_in.request_id_b1,
-		request_id_b0     = header_in.request_id_b0,
+		request_id_b1     = req_id_b1,
+		request_id_b0     = req_id_b0,
 		content_length_b0 = size_of(Unknown_Type_Body),
 	}
 
 	body := Unknown_Type_Body {
-		type = header_in.type,
+		type = type,
 	}
 
 	_ = io.write_ptr(client, &header_out, size_of(header_out)) or_return

@@ -1,5 +1,26 @@
 package fcgi
 
+import "core:io"
+
+Error :: union #shared_nil {
+	io.Error,
+	Fcgi_Error,
+}
+
+Fcgi_Error :: enum {
+	None,
+	Unknown_Record_Type,
+	Invalid_Record,
+}
+
+Request :: struct {
+	id:     u16,
+	role:   Role,
+	flags:  bit_set[Request_Flag;u8],
+	params: map[string]string,
+	stdin:  [dynamic]u8,
+}
+
 Header :: struct #packed {
 	version:           u8,
 	type:              Record_Type,
@@ -41,11 +62,11 @@ Body :: union {
 Begin_Request_Body :: struct #packed {
 	role_b1:  u8,
 	role_b0:  u8,
-	flags:    bit_set[Begin_Request_Body_Flag;u8],
+	flags:    bit_set[Request_Flag;u8],
 	reserved: [5]u8,
 }
 
-Begin_Request_Body_Flag :: enum u8 {
+Request_Flag :: enum u8 {
 	Keep_Conn = 1,
 }
 
