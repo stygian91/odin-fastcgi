@@ -39,76 +39,68 @@ on_client_accepted :: proc(client: RWC) {
 			return
 		}
 
-		log.debugf("req: %+v", request)
-
 		if done {break}
 	}
 
 	log.debugf("Received request: %+v", request)
 
-	sb: strings.Builder
-	strings.write_string(&sb, "Content-Type: text/plain\r\n\r\nfoobar")
-
-	if e := send_stdout(client, request.id, sb); e != nil {
-		log.errorf("error in send_stdout: %s", e)
-		return
-	}
-
-	if e := send_end_request(client, request.id); e != nil {
-		log.errorf("error in send_end_request: %s", e)
-		return
-	}
+	// sb: strings.Builder
+	// strings.write_string(&sb, "Content-Type: text/plain\r\n\r\nfoobar")
+	//
+	// if e := send_stdout(client, request.id, sb); e != nil {
+	// 	log.errorf("error in send_stdout: %s", e)
+	// 	return
+	// }
+	//
+	// if e := send_end_request(client, request.id); e != nil {
+	// 	log.errorf("error in send_end_request: %s", e)
+	// 	return
+	// }
 
 	// TODO: set up proper callback instead of placeholder response
 }
 
+@(require_results)
 read_record_into_request :: proc(client: RWC, req: ^Request) -> (done: bool, err: Error) {
-	read_bytes, n := 0, 0
 	header: Header
-	log.debug("waiting on header")
 	_ = io.read_ptr(client, &header, size_of(Header)) or_return
 	content_len := int(combine_u16(header.content_length_b1, header.content_length_b0))
 
-	defer if read_bytes < int(header.padding_length) + content_len {
-		remaining := content_len + int(header.padding_length) - read_bytes
-		log.debugf("reading padding: %d", remaining)
-		if n2, e := io.read_at_least(client, PADDING_BUF[:], remaining); e != nil {
+	defer if header.padding_length > 0 {
+		rem := int(header.padding_length)
+		if n2, e := io.read_at_least(client, PADDING_BUF[:rem], rem); e != nil {
 			log.errorf("error while reading padding: %s; read n bytes: %d", e, n2)
 		}
 	}
-
-	log.debugf("header: %+v", header)
 
 	#partial switch header.type {
 	case .Begin_Request:
 		validate_content_length(content_len, size_of(Begin_Request_Body)) or_return
 		b: Begin_Request_Body
-		n = io.read_ptr(client, &b, content_len) or_return
+		_ = io.read_ptr(client, &b, content_len) or_return
 		req.id = combine_u16(header.request_id_b1, header.request_id_b0)
 		// if the protocol uses 2 bytes for the roles but there are currently only 3 roles
 		req.role = cast(Role)b.role_b0
 		req.flags = b.flags
 
 	case .Params:
-		n = io.read_at_least(client, CONTENT_BUF[:], content_len) or_return
+		_ = io.read_at_least(client, CONTENT_BUF[:content_len], content_len) or_return
 		parse_params(CONTENT_BUF[:content_len], &req.params)
-		log.debug("after parse")
-		// done = true
 
 	case .Stdin:
-		n = io.read_at_least(client, CONTENT_BUF[:], content_len) or_return
+		_ = io.read_at_least(client, CONTENT_BUF[:content_len], content_len) or_return
 		old_len := len(req.stdin)
 		resize(&req.stdin, old_len + content_len)
 		copy(req.stdin[old_len:], CONTENT_BUF[:content_len])
 
 	case:
-		log.debug("default case")
-		n = io.read_at_least(client, CONTENT_BUF[:], content_len) or_return
+		_ = io.read_at_least(client, CONTENT_BUF[:content_len], content_len) or_return
 		err = .Unknown_Record_Type
 	}
 
-	read_bytes += n
-	log.debug("after switch")
+	if header.type == .Stdin && content_len == 0 {
+		done = true
+	}
 
 	return
 }
