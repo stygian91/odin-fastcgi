@@ -1,6 +1,6 @@
 package fcgi
 
-import "core:io"
+import "core:strconv"
 import "core:strings"
 
 combine_u16 :: #force_inline proc "contextless" (b1, b0: u8) -> u16 {
@@ -72,4 +72,48 @@ parse_key_value_pair :: proc(buf: []u8) -> (n: int, key: string, value: string) 
 	n = curr + int(val_len)
 
 	return
+}
+
+@(private)
+MAX_4B :: 0xEFFF_FFFF
+
+@(require_results)
+serialize_map :: proc(sb: ^strings.Builder, m: map[string]string) -> (err: Serialize_Error) {
+	for key, value in m {
+		serialize_key_value_pair(sb, key, value) or_return
+	}
+
+	return
+}
+
+@(require_results)
+serialize_key_value_pair :: proc(sb: ^strings.Builder, key, value: string) -> (err: Serialize_Error) {
+	if len(key) <= 0b0111_1111 {
+		strings.write_byte(sb, byte(len(key)))
+	} else if len(key) <= MAX_4B {
+		write_u32(sb, u32(len(key)))
+	} else {
+		return .Key_Too_Large
+	}
+
+	strings.write_string(sb, key)
+
+	if len(value) <= 0b0111_1111 {
+		strings.write_byte(sb, byte(len(value)))
+	} else if len(value) <= MAX_4B {
+		write_u32(sb, u32(len(value)))
+	} else {
+		return .Value_Too_Large
+	}
+
+	strings.write_string(sb, value)
+
+	return
+}
+
+@(private)
+write_u32 :: proc(sb: ^strings.Builder, num: u32) -> (n: int) {
+	buf: [32]byte
+	s := strconv.write_bits(buf[:], u64(num), 10, false, 32, strconv.digits, nil)
+	return strings.write_string(sb, s)
 }

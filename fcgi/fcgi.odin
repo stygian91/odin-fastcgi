@@ -2,7 +2,10 @@ package fcgi
 
 import "core:io"
 import "core:log"
+import "core:strconv"
 import "core:strings"
+
+import "../config"
 
 VERSION :: 1
 
@@ -42,20 +45,32 @@ on_client_accepted :: proc(client: RWC) {
 		if done {break}
 	}
 
-	log.debugf("Received request: %+v", request)
+	if request.is_get_values {
+		if e := send_get_value_results(client, request); e != nil {
+			log.errorf("Error while sending Get_Value_Results: %s", e)
+		} else {
+			log.info("Sent Get_Value_Results")
+		}
 
-	// sb: strings.Builder
-	// strings.write_string(&sb, "Content-Type: text/plain\r\n\r\nfoobar")
-	//
-	// if e := send_stdout(client, request.id, sb); e != nil {
-	// 	log.errorf("error in send_stdout: %s", e)
-	// 	return
-	// }
-	//
-	// if e := send_end_request(client, request.id); e != nil {
-	// 	log.errorf("error in send_end_request: %s", e)
-	// 	return
-	// }
+		return
+	}
+
+	log.infof("Received request with URI: %s", request.params["REQUEST_URI"] or_else "/")
+
+	body_str := strings.clone_from_bytes(request.stdin[:])
+	sb: strings.Builder
+	strings.write_string(&sb, "Content-Type: text/plain\r\n\r\n")
+	strings.write_string(&sb, strings.reverse(body_str))
+
+	if e := send_stdout(client, request.id, sb); e != nil {
+		log.errorf("error in send_stdout: %s", e)
+		return
+	}
+
+	if e := send_end_request(client, request.id); e != nil {
+		log.errorf("error in send_end_request: %s", e)
+		return
+	}
 
 	// TODO: set up proper callback instead of placeholder response
 }
@@ -68,7 +83,7 @@ read_record_into_request :: proc(client: RWC, req: ^Request) -> (done: bool, err
 
 	defer if header.padding_length > 0 {
 		rem := int(header.padding_length)
-		if n2, e := io.read_at_least(client, PADDING_BUF[:rem], rem); e != nil {
+		if n2, e := io.read_full(client, PADDING_BUF[:rem]); e != nil {
 			log.errorf("error while reading padding: %s; read n bytes: %d", e, n2)
 		}
 	}
@@ -84,23 +99,63 @@ read_record_into_request :: proc(client: RWC, req: ^Request) -> (done: bool, err
 		req.flags = b.flags
 
 	case .Params:
-		_ = io.read_at_least(client, CONTENT_BUF[:content_len], content_len) or_return
+		_ = io.read_full(client, CONTENT_BUF[:content_len]) or_return
 		parse_params(CONTENT_BUF[:content_len], &req.params)
 
 	case .Stdin:
-		_ = io.read_at_least(client, CONTENT_BUF[:content_len], content_len) or_return
+		_ = io.read_full(client, CONTENT_BUF[:content_len]) or_return
 		old_len := len(req.stdin)
 		resize(&req.stdin, old_len + content_len)
 		copy(req.stdin[old_len:], CONTENT_BUF[:content_len])
 
+	case .Get_Values:
+		_ = io.read_full(client, CONTENT_BUF[:content_len]) or_return
+		parse_params(CONTENT_BUF[:content_len], &req.params)
+		done = true
+
 	case:
-		_ = io.read_at_least(client, CONTENT_BUF[:content_len], content_len) or_return
+		_ = io.read_full(client, CONTENT_BUF[:content_len]) or_return
 		err = .Unknown_Record_Type
 	}
 
 	if header.type == .Stdin && content_len == 0 {
 		done = true
 	}
+
+	return
+}
+
+send_get_value_results :: proc(client: RWC, req: Request) -> (err: Error) {
+	res_values := map[string]string{}
+
+	buf := [10]u8{}
+	if FCGI_MAX_REQS in req.params {
+		res_values[FCGI_MAX_REQS] = strconv.itoa(buf[:], config.GLOBAL_CONFIG.worker_count)
+	}
+
+	if FCGI_MPXS_CONNS in req.params {
+		res_values[FCGI_MPXS_CONNS] = "0"
+	}
+
+	if FCGI_MAX_CONNS in req.params {
+		res_values[FCGI_MAX_CONNS] = "1"
+	}
+
+	header := Header{
+		version = VERSION,
+		type = .Get_Values_Result,
+	}
+
+	header.request_id_b1, header.request_id_b0 = split_u16(req.id)
+
+	content_builder: strings.Builder
+	serialize_map(&content_builder, res_values) or_return
+
+	content_len := len(content_builder.buf)
+	header.content_length_b1, header.content_length_b0 = split_u16(u16(content_len))
+
+	_ = io.write_ptr(client, &header, size_of(Header)) or_return
+	_ = io.write_full(client, content_builder.buf[:]) or_return
 
 	return
 }

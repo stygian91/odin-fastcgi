@@ -62,7 +62,6 @@ _run :: proc() {
 }
 
 main_on_client_accepted :: proc(client_sock: posix.FD) {
-	cs := client_sock
 	defer posix.close(client_sock)
 
 	log.debugf("client accepted in main: %+v", client_sock)

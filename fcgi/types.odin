@@ -5,6 +5,7 @@ import "core:io"
 Error :: union #shared_nil {
 	io.Error,
 	Fcgi_Error,
+	Serialize_Error,
 }
 
 Fcgi_Error :: enum {
@@ -13,12 +14,18 @@ Fcgi_Error :: enum {
 	Invalid_Record,
 }
 
+Serialize_Error :: enum {
+	Key_Too_Large,
+	Value_Too_Large,
+}
+
 Request :: struct {
-	id:     u16,
-	role:   Role,
-	flags:  bit_set[Request_Flag;u8],
-	params: map[string]string,
-	stdin:  [dynamic]u8,
+	id:            u16,
+	role:          Role,
+	flags:         bit_set[Request_Flag;u8],
+	params:        map[string]string,
+	stdin:         [dynamic]u8,
+	is_get_values: bool,
 }
 
 Header :: struct #packed {
@@ -98,6 +105,8 @@ Protocol_Status :: enum u8 {
 FCGI_MAX_CONNS :: "FCGI_MAX_CONNS"
 FCGI_MAX_REQS :: "FCGI_MAX_REQS"
 FCGI_MPXS_CONNS :: "FCGI_MPXS_CONNS"
+
+ALLOWED_FCGI_GET_VALUES :: [?]string{FCGI_MAX_CONNS, FCGI_MAX_REQS, FCGI_MPXS_CONNS}
 
 Unknown_Type_Body :: struct #packed {
 	type:     Record_Type,
