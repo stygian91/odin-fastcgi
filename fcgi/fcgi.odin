@@ -2,7 +2,6 @@ package fcgi
 
 import "core:mem"
 import "core:io"
-import vmem "core:mem/virtual"
 import "core:log"
 import "core:strconv"
 import "core:strings"
@@ -52,7 +51,6 @@ on_client_accepted :: proc(client: RWC, alloc: mem.Allocator) {
 			log.errorf("Error while reading record into request: %s", read_err)
 			// TODO: disambiguate errors and add more info to log
 			// TODO: sending any potential responses back to the web server
-			// TODO: handle memory errors
 			return
 		}
 

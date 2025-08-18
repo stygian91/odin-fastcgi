@@ -2,8 +2,6 @@ package config
 
 import "base:runtime"
 import "core:encoding/ini"
-import "core:flags"
-import "core:fmt"
 import "core:os"
 import "core:strconv"
 import "core:strings"
@@ -31,28 +29,7 @@ Error :: union #shared_nil {
 
 Missing_Required_Value :: Maybe(string)
 
-Command_Arguments :: struct {
-	config: string `usage:"Config file path"`,
-}
-
 GLOBAL_CONFIG: Config
-
-init :: proc(default_config_path: string) {
-	args := load_cli_args()
-	ini_path := args.config if len(args.config) > 0 else default_config_path
-	cfg, cfg_err := load_from_file(ini_path)
-
-	if cfg_err != nil {
-		if e, ok := cfg_err.(Missing_Required_Value); ok {
-			fmt.eprintfln("Config error: missing required value '%s'", e)
-		} else {
-			fmt.eprintfln("Config error: %s", cfg_err)
-		}
-		os.exit(1)
-	}
-
-	GLOBAL_CONFIG = cfg
-}
 
 @(require_results)
 load_from_file :: proc(path: string) -> (cfg: Config, err: Error) {
@@ -71,11 +48,6 @@ load_from_file :: proc(path: string) -> (cfg: Config, err: Error) {
 	return cfg, nil
 }
 
-load_cli_args :: proc() -> Command_Arguments {
-	cli_args: Command_Arguments
-	flags.parse_or_exit(&cli_args, os.args, .Unix)
-	return cli_args
-}
 
 @(private, require_results)
 _get_required :: proc(m: map[string]string, key: string) -> (val: string, err: Error) {

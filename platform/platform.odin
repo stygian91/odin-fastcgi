@@ -1,10 +1,8 @@
 package platform
 
-import "core:io"
+import "../config"
 
-// Called when a new client was received in a worker process
-Received_Proc :: proc(client: io.Read_Write_Closer)
-
-run :: proc() {
-	_run()
+run :: proc(cfg: config.Config) {
+	config.GLOBAL_CONFIG = cfg
+	_run(&config.GLOBAL_CONFIG)
 }

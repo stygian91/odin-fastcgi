@@ -36,10 +36,7 @@ SHARED: ^[]Child_State
 SOCKET_PAIRS: [dynamic][2]posix.FD
 
 @(private)
-_run :: proc() {
-	conf.init(DEFAULT_CONFIG_PATH)
-	cfg := &conf.GLOBAL_CONFIG
-
+_run :: proc(cfg: ^conf.Config) {
 	logger, log_err := logging.init_log(cfg.log_path)
 	if log_err != nil {
 		fmt.eprintfln("Failed to init logger file: %s", cfg.log_path)
