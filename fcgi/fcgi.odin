@@ -1,6 +1,8 @@
 package fcgi
 
+import "core:mem"
 import "core:io"
+import vmem "core:mem/virtual"
 import "core:log"
 import "core:strconv"
 import "core:strings"
@@ -19,12 +21,16 @@ RWC :: io.Read_Write_Closer
 
 PARAMS_INITIAL_RESERVE :: 40
 
-// TODO: use arena
-on_client_accepted :: proc(client: RWC) {
+// TODO: check for all places with optional allocator error
+// TODO: use arena allocator for content/padding buffers
+on_client_accepted :: proc(client: RWC, alloc: mem.Allocator) {
 	defer {
 		io.close(client)
 		io.flush(client)
+		mem.free_all(alloc)
 	}
+
+	context.allocator = alloc
 
 	request := Request {
 		// we preallocate the size based on rough estimate of how many params are usually in a request
@@ -39,6 +45,7 @@ on_client_accepted :: proc(client: RWC) {
 			log.errorf("Error while reading record into request: %s", read_err)
 			// TODO: disambiguate errors and add more info to log
 			// TODO: sending any potential responses back to the web server
+			// TODO: handle memory errors
 			return
 		}
 

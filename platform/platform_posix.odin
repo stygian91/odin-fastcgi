@@ -1,5 +1,6 @@
 package platform
 
+import vmem "core:mem/virtual"
 import "base:runtime"
 import "core:c"
 import "core:fmt"
@@ -49,7 +50,7 @@ _run :: proc() {
 	// ignore sigpipe signal
 	posix.signal(.SIGPIPE, cast(proc "c" (posix.Signal)) posix.SIG_IGN)
 
-	if e := init_worker_processes(cfg.worker_count); e != nil {
+	if e := init_worker_processes(cfg.worker_count, cfg.memory_limit); e != nil {
 		log.fatalf("Failed to init workers: %s", e)
 		posix.exit(1)
 	}
@@ -174,9 +175,13 @@ create_and_listen :: proc(path: string, backlog: c.int) -> (sock: posix.FD, err:
 }
 
 @(require_results)
-init_worker_processes :: proc(n: int) -> (err: Error) {
+init_worker_processes :: proc(n: int, memory_limit: uint) -> (err: Error) {
 	SHARED = mmap_shared_slice(Child_State, n) or_return
 	SOCKET_PAIRS = init_socket_pairs(n) or_return
+
+	arena: vmem.Arena
+	vmem.arena_init_static(&arena, memory_limit * mem.Megabyte) or_return
+	alloc := vmem.arena_allocator(&arena)
 
 	for i in 0 ..< n {
 		pid := posix.fork()
@@ -185,7 +190,7 @@ init_worker_processes :: proc(n: int) -> (err: Error) {
 		}
 
 		if pid == 0 {
-			init_child(n, i)
+			init_child(n, i, alloc)
 			posix.exit(0)
 		}
 
@@ -197,7 +202,7 @@ init_worker_processes :: proc(n: int) -> (err: Error) {
 }
 
 @(private)
-init_child :: proc(n, child_number: int) {
+init_child :: proc(n, child_number: int, alloc: mem.Allocator) {
 	// close other processes' sockets
 	for i in 0 ..< n {
 		if i != child_number {
@@ -236,7 +241,7 @@ init_child :: proc(n, child_number: int) {
 		log.debugf("Client %d received fd: %+v", child_number, client_sock)
 
 		stream := os.stream_from_handle(os.Handle(client_sock))
-		fcgi.on_client_accepted(io.to_read_write_closer(stream))
+		fcgi.on_client_accepted(io.to_read_write_closer(stream), alloc)
 	}
 }
 

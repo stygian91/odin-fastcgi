@@ -1,11 +1,13 @@
 package fcgi
 
+import "core:mem"
 import "core:io"
 
 Error :: union #shared_nil {
 	io.Error,
 	Fcgi_Error,
 	Serialize_Error,
+	mem.Allocator_Error,
 }
 
 Fcgi_Error :: enum {
