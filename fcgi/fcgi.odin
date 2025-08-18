@@ -12,7 +12,10 @@ import "../config"
 VERSION :: 1
 
 @(private)
-CONTENT_BUF := [1 << 16]u8{}
+CONTENT_BUF_SIZE :: 1 << 16
+
+@(private)
+CONTENT_BUF := [CONTENT_BUF_SIZE]u8{}
 
 @(private)
 PADDING_BUF := [256]u8{}
@@ -22,7 +25,6 @@ RWC :: io.Read_Write_Closer
 PARAMS_INITIAL_RESERVE :: 40
 
 // TODO: check for all places with optional allocator error
-// TODO: use arena allocator for content/padding buffers
 on_client_accepted :: proc(client: RWC, alloc: mem.Allocator) {
 	defer {
 		io.close(client)
@@ -106,18 +108,21 @@ read_record_into_request :: proc(client: RWC, req: ^Request) -> (done: bool, err
 		req.flags = b.flags
 
 	case .Params:
-		_ = io.read_full(client, CONTENT_BUF[:content_len]) or_return
-		parse_params(CONTENT_BUF[:content_len], &req.params)
+		buf := make([dynamic]u8, content_len)
+		_ = io.read_full(client, buf[:]) or_return
+		parse_params(buf[:], &req.params)
 
 	case .Stdin:
-		_ = io.read_full(client, CONTENT_BUF[:content_len]) or_return
+		buf := make([dynamic]u8, content_len)
+		_ = io.read_full(client, buf[:]) or_return
 		old_len := len(req.stdin)
 		resize(&req.stdin, old_len + content_len)
-		copy(req.stdin[old_len:], CONTENT_BUF[:content_len])
+		copy(req.stdin[old_len:], buf[:])
 
 	case .Get_Values:
-		_ = io.read_full(client, CONTENT_BUF[:content_len]) or_return
-		parse_params(CONTENT_BUF[:content_len], &req.params)
+		buf := make([dynamic]u8, content_len)
+		_ = io.read_full(client, buf[:]) or_return
+		parse_params(buf[:], &req.params)
 		done = true
 
 	case:
