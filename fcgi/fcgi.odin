@@ -24,21 +24,26 @@ RWC :: io.Read_Write_Closer
 
 PARAMS_INITIAL_RESERVE :: 40
 
-// TODO: check for all places with optional allocator error
 on_client_accepted :: proc(client: RWC, alloc: mem.Allocator) {
+	context.allocator = alloc
+
 	defer {
 		io.close(client)
 		io.flush(client)
 		mem.free_all(alloc)
 	}
 
-	context.allocator = alloc
+	params, p_alloc_err := make(map[string]string, PARAMS_INITIAL_RESERVE)
+	if p_alloc_err != nil {
+		log.errorf("Allocation error while creating params map: %s", p_alloc_err)
+		return
+	}
 
 	request := Request {
 		// we preallocate the size based on rough estimate of how many params are usually in a request
 		// the estimate is based on observation of a request sent from nginx
 		// the map can grow if need be
-		params = make(map[string]string, PARAMS_INITIAL_RESERVE),
+		params = params,
 	}
 
 	for {
@@ -108,19 +113,19 @@ read_record_into_request :: proc(client: RWC, req: ^Request) -> (done: bool, err
 		req.flags = b.flags
 
 	case .Params:
-		buf := make([dynamic]u8, content_len)
+		buf := make([dynamic]u8, content_len) or_return
 		_ = io.read_full(client, buf[:]) or_return
 		parse_params(buf[:], &req.params)
 
 	case .Stdin:
-		buf := make([dynamic]u8, content_len)
+		buf := make([dynamic]u8, content_len) or_return
 		_ = io.read_full(client, buf[:]) or_return
 		old_len := len(req.stdin)
-		resize(&req.stdin, old_len + content_len)
+		resize(&req.stdin, old_len + content_len) or_return
 		copy(req.stdin[old_len:], buf[:])
 
 	case .Get_Values:
-		buf := make([dynamic]u8, content_len)
+		buf := make([dynamic]u8, content_len) or_return
 		_ = io.read_full(client, buf[:]) or_return
 		parse_params(buf[:], &req.params)
 		done = true
