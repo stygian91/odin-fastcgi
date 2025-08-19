@@ -1,12 +1,12 @@
 package platform
 
-import vmem "core:mem/virtual"
 import "base:runtime"
 import "core:c"
 import "core:fmt"
 import "core:io"
 import "core:log"
 import "core:mem"
+import vmem "core:mem/virtual"
 import "core:os"
 import "core:strings"
 import "core:sync"
@@ -36,7 +36,7 @@ SHARED: ^[]Child_State
 SOCKET_PAIRS: [dynamic][2]posix.FD
 
 @(private)
-_run :: proc(cfg: ^conf.Config) {
+_run :: proc(cfg: ^conf.Config, on_request: fcgi.On_Request) {
 	logger, log_err := logging.init_log(cfg.log_path)
 	if log_err != nil {
 		fmt.eprintfln("Failed to init logger file: %s", cfg.log_path)
@@ -45,9 +45,9 @@ _run :: proc(cfg: ^conf.Config) {
 	context.logger = logger
 
 	// ignore sigpipe signal
-	posix.signal(.SIGPIPE, cast(proc "c" (posix.Signal)) posix.SIG_IGN)
+	posix.signal(.SIGPIPE, cast(proc "c" (_: posix.Signal))posix.SIG_IGN)
 
-	if e := init_worker_processes(cfg.worker_count, cfg.memory_limit); e != nil {
+	if e := init_worker_processes(cfg.worker_count, cfg.memory_limit, on_request); e != nil {
 		log.fatalf("Failed to init workers: %s", e)
 		posix.exit(1)
 	}
@@ -172,7 +172,7 @@ create_and_listen :: proc(path: string, backlog: c.int) -> (sock: posix.FD, err:
 }
 
 @(require_results)
-init_worker_processes :: proc(n: int, memory_limit: uint) -> (err: Error) {
+init_worker_processes :: proc(n: int, memory_limit: uint, on_request: fcgi.On_Request) -> (err: Error) {
 	SHARED = mmap_shared_slice(Child_State, n) or_return
 	SOCKET_PAIRS = init_socket_pairs(n) or_return
 
@@ -187,7 +187,7 @@ init_worker_processes :: proc(n: int, memory_limit: uint) -> (err: Error) {
 		}
 
 		if pid == 0 {
-			init_child(n, i, alloc)
+			init_child(n, i, alloc, on_request)
 			posix.exit(0)
 		}
 
@@ -199,7 +199,7 @@ init_worker_processes :: proc(n: int, memory_limit: uint) -> (err: Error) {
 }
 
 @(private)
-init_child :: proc(n, child_number: int, alloc: mem.Allocator) {
+init_child :: proc(n, child_number: int, alloc: mem.Allocator, on_request: fcgi.On_Request) {
 	// close other processes' sockets
 	for i in 0 ..< n {
 		if i != child_number {
@@ -238,7 +238,7 @@ init_child :: proc(n, child_number: int, alloc: mem.Allocator) {
 		log.debugf("Client %d received fd: %+v", child_number, client_sock)
 
 		stream := os.stream_from_handle(os.Handle(client_sock))
-		fcgi.on_client_accepted(io.to_read_write_closer(stream), alloc)
+		fcgi.on_client_accepted(io.to_read_write_closer(stream), alloc, on_request)
 	}
 }
 

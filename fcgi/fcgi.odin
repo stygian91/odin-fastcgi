@@ -5,8 +5,33 @@ import "core:io"
 import "core:log"
 import "core:strconv"
 import "core:strings"
+import "core:fmt"
 
 import "../config"
+import t "../types"
+
+Error :: t.Error
+Fcgi_Error :: t.Fcgi_Error
+Serialize_Error :: t.Serialize_Error
+Request :: t.Request
+Header ::t.Header
+Record_Type ::t.Record_Type
+Record ::t.Record
+Body ::t.Body
+Begin_Request_Body ::t.Begin_Request_Body
+Request_Flag ::t.Request_Flag
+Role ::t.Role
+End_Request_Body ::t.End_Request_Body
+Raw_Body :: t.Raw_Body
+Protocol_Status ::t.Protocol_Status
+FCGI_MAX_CONNS :: t.FCGI_MAX_CONNS
+FCGI_MAX_REQS :: t.FCGI_MAX_REQS
+FCGI_MPXS_CONNS :: t.FCGI_MPXS_CONNS
+ALLOWED_FCGI_GET_VALUES :: t.ALLOWED_FCGI_GET_VALUES
+Unknown_Type_Body ::t.Unknown_Type_Body
+Http_Header ::t.Http_Header
+Response ::t.Response
+On_Request :: t.On_Request
 
 VERSION :: 1
 
@@ -23,7 +48,7 @@ RWC :: io.Read_Write_Closer
 
 PARAMS_INITIAL_RESERVE :: 40
 
-on_client_accepted :: proc(client: RWC, alloc: mem.Allocator) {
+on_client_accepted :: proc(client: RWC, alloc: mem.Allocator, on_request: On_Request) {
 	context.allocator = alloc
 
 	defer {
@@ -67,12 +92,22 @@ on_client_accepted :: proc(client: RWC, alloc: mem.Allocator) {
 		return
 	}
 
-	log.infof("Received request with URI: %s", request.params["REQUEST_URI"] or_else "/")
+	response := on_request(&request)
+	if response.status == .None {
+		response.status = .Ok
+	}
 
-	body_str := strings.clone_from_bytes(request.stdin[:])
-	sb: strings.Builder
-	strings.write_string(&sb, "Content-Type: text/plain\r\n\r\n")
-	strings.write_string(&sb, strings.reverse(body_str))
+	sb : strings.Builder
+	fmt.sbprintf(&sb, "Status: %d\r\n", response.status)
+
+	// TODO: check for \r and \n in headers
+	// TODO: validate header names
+	for header in response.headers {
+		fmt.sbprintf(&sb, "%s: %s\r\n", header.key, header.value)
+	}
+
+	strings.write_string(&sb, "\r\n")
+	strings.write_bytes(&sb, response.body[:])
 
 	if e := send_stdout(client, request.id, sb); e != nil {
 		log.errorf("error in send_stdout: %s", e)
@@ -83,8 +118,6 @@ on_client_accepted :: proc(client: RWC, alloc: mem.Allocator) {
 		log.errorf("error in send_end_request: %s", e)
 		return
 	}
-
-	// TODO: set up proper callback instead of placeholder response
 }
 
 @(require_results)
