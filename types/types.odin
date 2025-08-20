@@ -65,7 +65,6 @@ Body :: union {
 	End_Request_Body,
 	Unknown_Type_Body,
 	Raw_Body,
-	// TODO: other types
 }
 
 Begin_Request_Body :: struct #packed {

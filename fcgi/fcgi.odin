@@ -1,11 +1,11 @@
 package fcgi
 
-import "core:mem"
+import "core:fmt"
 import "core:io"
 import "core:log"
+import "core:mem"
 import "core:strconv"
 import "core:strings"
-import "core:fmt"
 
 import "../config"
 import t "../types"
@@ -14,23 +14,23 @@ Error :: t.Error
 Fcgi_Error :: t.Fcgi_Error
 Serialize_Error :: t.Serialize_Error
 Request :: t.Request
-Header ::t.Header
-Record_Type ::t.Record_Type
-Record ::t.Record
-Body ::t.Body
-Begin_Request_Body ::t.Begin_Request_Body
-Request_Flag ::t.Request_Flag
-Role ::t.Role
-End_Request_Body ::t.End_Request_Body
+Header :: t.Header
+Record_Type :: t.Record_Type
+Record :: t.Record
+Body :: t.Body
+Begin_Request_Body :: t.Begin_Request_Body
+Request_Flag :: t.Request_Flag
+Role :: t.Role
+End_Request_Body :: t.End_Request_Body
 Raw_Body :: t.Raw_Body
-Protocol_Status ::t.Protocol_Status
+Protocol_Status :: t.Protocol_Status
 FCGI_MAX_CONNS :: t.FCGI_MAX_CONNS
 FCGI_MAX_REQS :: t.FCGI_MAX_REQS
 FCGI_MPXS_CONNS :: t.FCGI_MPXS_CONNS
 ALLOWED_FCGI_GET_VALUES :: t.ALLOWED_FCGI_GET_VALUES
-Unknown_Type_Body ::t.Unknown_Type_Body
-Http_Header ::t.Http_Header
-Response ::t.Response
+Unknown_Type_Body :: t.Unknown_Type_Body
+Http_Header :: t.Http_Header
+Response :: t.Response
 On_Request :: t.On_Request
 
 VERSION :: 1
@@ -51,12 +51,26 @@ PARAMS_INITIAL_RESERVE :: 40
 on_client_accepted :: proc(client: RWC, alloc: mem.Allocator, on_request: On_Request) {
 	context.allocator = alloc
 
-	defer {
-		io.close(client)
+	cleanup :: proc(client: RWC, alloc: mem.Allocator, keep: bool) {
+		if !keep {io.close(client)}
 		io.flush(client)
 		mem.free_all(alloc)
 	}
 
+	for {
+		keep := process_request(client, alloc, on_request)
+		cleanup(client, alloc, keep)
+		if !keep {break}
+	}
+}
+
+process_request :: proc(
+	client: RWC,
+	alloc: mem.Allocator,
+	on_request: On_Request,
+) -> (
+	keep: bool,
+) {
 	params, p_alloc_err := make(map[string]string, PARAMS_INITIAL_RESERVE)
 	if p_alloc_err != nil {
 		log.errorf("Allocation error while creating params map: %s", p_alloc_err)
@@ -92,12 +106,14 @@ on_client_accepted :: proc(client: RWC, alloc: mem.Allocator, on_request: On_Req
 		return
 	}
 
+	log.debugf("req flags: %v", request.flags)
+
 	response := on_request(&request)
 	if response.status == .None {
 		response.status = .Ok
 	}
 
-	sb : strings.Builder
+	sb: strings.Builder
 	fmt.sbprintf(&sb, "Status: %d\r\n", response.status)
 
 	// TODO: check for \r and \n in headers
@@ -118,6 +134,9 @@ on_client_accepted :: proc(client: RWC, alloc: mem.Allocator, on_request: On_Req
 		log.errorf("error in send_end_request: %s", e)
 		return
 	}
+
+	keep = .Keep_Conn in request.flags
+	return
 }
 
 @(require_results)
@@ -189,9 +208,9 @@ send_get_value_results :: proc(client: RWC, req: Request) -> (err: Error) {
 		res_values[FCGI_MAX_CONNS] = "1"
 	}
 
-	header := Header{
+	header := Header {
 		version = VERSION,
-		type = .Get_Values_Result,
+		type    = .Get_Values_Result,
 	}
 
 	header.request_id_b1, header.request_id_b0 = split_u16(req.id)
