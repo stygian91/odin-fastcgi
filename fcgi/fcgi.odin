@@ -116,10 +116,11 @@ process_request :: proc(
 	sb: strings.Builder
 	fmt.sbprintf(&sb, "Status: %d\r\n", response.status)
 
-	// TODO: check for \r and \n in headers
 	// TODO: validate header names
 	for header in response.headers {
-		fmt.sbprintf(&sb, "%s: %s\r\n", header.key, header.value)
+		key, _ := remove_new_lines(header.key, context.allocator)
+		val, _ := remove_new_lines(header.value, context.allocator)
+		fmt.sbprintf(&sb, "%s: %s\r\n", key, val)
 	}
 
 	strings.write_string(&sb, "\r\n")

@@ -87,7 +87,12 @@ serialize_map :: proc(sb: ^strings.Builder, m: map[string]string) -> (err: Seria
 }
 
 @(require_results)
-serialize_key_value_pair :: proc(sb: ^strings.Builder, key, value: string) -> (err: Serialize_Error) {
+serialize_key_value_pair :: proc(
+	sb: ^strings.Builder,
+	key, value: string,
+) -> (
+	err: Serialize_Error,
+) {
 	if len(key) <= 0b0111_1111 {
 		strings.write_byte(sb, byte(len(key)))
 	} else if len(key) <= MAX_4B {
@@ -116,4 +121,37 @@ write_u32 :: proc(sb: ^strings.Builder, num: u32) -> (n: int) {
 	buf: [32]byte
 	s := strconv.write_bits(buf[:], u64(num), 10, false, 32, strconv.digits, nil)
 	return strings.write_string(sb, s)
+}
+
+@(require_results)
+remove_new_lines :: proc(s: string, alloc := context.allocator) -> (res: string, has_alloc: bool) {
+	bytes := raw_data(s)
+	cur_l, cur_r := 0, 0
+	r: []u8
+	new_len := len(s)
+
+	for i in 0 ..< len(s) {
+		if bytes[i] == '\r' || bytes[i] == '\n' {
+			if !has_alloc {
+				has_alloc = true
+				r = make([]u8, len(s), alloc)
+			}
+
+			copy(r[cur_l:i], bytes[cur_r:i])
+			new_len -= 1
+			cur_l += (i - cur_r)
+			cur_r = i + 1
+		}
+	}
+
+	if has_alloc {
+		if cur_r < (len(s) - 1) {
+			copy(r[cur_l:new_len], bytes[cur_r:len(s)])
+		}
+
+		res = string(r[:new_len])
+		return
+	}
+
+	return
 }
