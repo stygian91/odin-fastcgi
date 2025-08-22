@@ -153,5 +153,6 @@ remove_new_lines :: proc(s: string, alloc := context.allocator) -> (res: string,
 		return
 	}
 
+	res = s
 	return
 }
