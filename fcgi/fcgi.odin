@@ -36,13 +36,13 @@ On_Request :: t.On_Request
 VERSION :: 1
 
 @(private)
-CONTENT_BUF_SIZE :: 1 << 16
+CONTENT_BUF_SIZE :: (1 << 16) - 1
 
 @(private)
 CONTENT_BUF := [CONTENT_BUF_SIZE]u8{}
 
 @(private)
-PADDING_BUF := [256]u8{}
+PADDING_BUF := [255]u8{}
 
 RWC :: io.Read_Write_Closer
 
@@ -105,8 +105,6 @@ process_request :: proc(
 
 		return
 	}
-
-	log.debugf("req flags: %v", request.flags)
 
 	response := on_request(&request)
 	if response.status == .None {
@@ -230,7 +228,6 @@ send_get_value_results :: proc(client: RWC, req: Request) -> (err: Error) {
 
 @(require_results)
 send_stdout :: proc(client: RWC, req_id: u16, sb: strings.Builder) -> (err: Error) {
-	// TODO: if the data is larger than max u16 len - split it
 	req_id_b1, req_id_b0 := split_u16(req_id)
 
 	h := Header {
@@ -240,15 +237,28 @@ send_stdout :: proc(client: RWC, req_id: u16, sb: strings.Builder) -> (err: Erro
 		type          = .Stdout,
 	}
 
-	h.content_length_b1, h.content_length_b0 = split_u16(u16(len(sb.buf)))
+	chunk_count := len(sb.buf) / CONTENT_BUF_SIZE
+	if len(sb.buf) % CONTENT_BUF_SIZE > 0 {
+		chunk_count += 1
+	}
 
-	_ = io.write_ptr(client, &h, size_of(h)) or_return
-	_ = io.write_full(client, sb.buf[:]) or_return
+	for i in 0 ..< chunk_count {
+		chunk_start := i * CONTENT_BUF_SIZE
+		chunk_end := chunk_start + CONTENT_BUF_SIZE
+		if chunk_end > len(sb.buf) {
+			chunk_end = len(sb.buf)
+		}
+
+		chunk := sb.buf[chunk_start:chunk_end]
+		h.content_length_b1, h.content_length_b0 = split_u16(u16(len(chunk)))
+		_ = io.write_ptr(client, &h, size_of(h)) or_return
+		_ = io.write_full(client, chunk) or_return
+
+		log.debugf("sent chunk #%d of size: %d", i, len(chunk))
+	}
 
 	h.content_length_b1, h.content_length_b0 = 0, 0
 	_ = io.write_ptr(client, &h, size_of(h)) or_return
-
-	log.debugf("sent stdout: %s", sb.buf)
 
 	return
 }
