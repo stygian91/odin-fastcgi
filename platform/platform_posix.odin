@@ -70,7 +70,8 @@ main_on_client_accepted :: proc(client_sock: posix.FD) {
 			send_err := send_fd(client_sock, SOCKET_PAIRS[i][0])
 			if send_err != nil {
 				log.errorf("Error in main sendmsg: %s", posix.get_errno())
-				continue
+				// TODO: probably send reject record to web server
+				break
 			}
 		}
 
@@ -81,12 +82,21 @@ main_on_client_accepted :: proc(client_sock: posix.FD) {
 	// TODO: do we add it to a queue or maybe send reject fastcgi record?
 }
 
+cmsg_align :: proc(len: int) -> int {
+	return ((len) + size_of(int) - 1) &~ (size_of(int) - 1)
+}
+
+cmsg_space :: proc(len: int) -> int {
+	return cmsg_align(len) + cmsg_align(size_of(posix.cmsghdr))
+}
+
 @(require_results)
 send_fd :: proc(fd: posix.FD, sock: posix.FD) -> posix.Errno {
-	// TODO: calc buf size like CMSG_SPACE(sizeof(fd)) in C
 	fd2 := fd
 	msg: posix.msghdr
-	buf: [256]u8
+	buf_len := cmsg_space(size_of(posix.FD))
+	buf := make([dynamic]u8, buf_len)
+	defer delete(buf)
 
 	base := "FD"
 	io := posix.iovec {
@@ -96,8 +106,8 @@ send_fd :: proc(fd: posix.FD, sock: posix.FD) -> posix.Errno {
 	msg.msg_iov = &io
 	msg.msg_iovlen = 1
 
-	msg.msg_control = &buf
-	msg.msg_controllen = size_of(buf)
+	msg.msg_control = raw_data(buf)
+	msg.msg_controllen = uint(buf_len)
 
 	cmsg := posix.CMSG_FIRSTHDR(&msg)
 	if cmsg == nil {
@@ -172,7 +182,13 @@ create_and_listen :: proc(path: string, backlog: c.int) -> (sock: posix.FD, err:
 }
 
 @(require_results)
-init_worker_processes :: proc(n: int, memory_limit: uint, on_request: fcgi.On_Request) -> (err: Error) {
+init_worker_processes :: proc(
+	n: int,
+	memory_limit: uint,
+	on_request: fcgi.On_Request,
+) -> (
+	err: Error,
+) {
 	SHARED = mmap_shared_slice(Child_State, n) or_return
 	SOCKET_PAIRS = init_socket_pairs(n) or_return
 
