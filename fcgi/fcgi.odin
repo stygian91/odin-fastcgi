@@ -238,13 +238,25 @@ send_headers :: proc(client: RWC, req_id: u16, response: ^Response) -> (err: Err
 	strings.write_string(&hb, "\r\n")
 
 	h_len := len(hb.buf)
-	if h_len > CONTENT_BUF_SIZE {
-		return .Record_Too_Large
+	chunk_count := h_len / CONTENT_BUF_SIZE
+	if h_len % CONTENT_BUF_SIZE > 0 {
+		chunk_count += 1
 	}
-	h.content_length_b1, h.content_length_b0 = split_u16(u16(h_len))
 
-	io.write_ptr(client, &h, size_of(Header))
-	io.write_full(client, hb.buf[:h_len])
+	for i in 0 ..< chunk_count {
+		chunk_start := i * CONTENT_BUF_SIZE
+		chunk_end := chunk_start + CONTENT_BUF_SIZE
+		if chunk_end > h_len {
+			chunk_end = h_len
+		}
+
+		chunk := hb.buf[chunk_start:chunk_end]
+		h.content_length_b1, h.content_length_b0 = split_u16(u16(len(chunk)))
+		_ = io.write_ptr(client, &h, size_of(h)) or_return
+		_ = io.write_full(client, chunk) or_return
+
+		log.debugf("sent header chunk #%d of size: %d", i, len(chunk))
+	}
 
 	return
 }
@@ -279,7 +291,7 @@ send_stdout :: proc(client: RWC, req_id: u16, response: ^Response) -> (err: Erro
 		_ = io.write_ptr(client, &h, size_of(h)) or_return
 		_ = io.write_full(client, chunk) or_return
 
-		log.debugf("sent chunk #%d of size: %d", i, len(chunk))
+		log.debugf("sent body chunk #%d of size: %d", i, len(chunk))
 	}
 
 	h.content_length_b1, h.content_length_b0 = 0, 0
