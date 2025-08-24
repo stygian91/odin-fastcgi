@@ -14,6 +14,7 @@ Fcgi_Error :: enum {
 	None,
 	Unknown_Record_Type,
 	Invalid_Record,
+	Record_Too_Large,
 }
 
 Serialize_Error :: enum {

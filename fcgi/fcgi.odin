@@ -111,20 +111,7 @@ process_request :: proc(
 		response.status = .Ok
 	}
 
-	sb: strings.Builder
-	fmt.sbprintf(&sb, "Status: %d\r\n", response.status)
-
-	// TODO: validate header names
-	for header in response.headers {
-		key, _ := remove_new_lines(header.key, context.allocator)
-		val, _ := remove_new_lines(header.value, context.allocator)
-		fmt.sbprintf(&sb, "%s: %s\r\n", key, val)
-	}
-
-	strings.write_string(&sb, "\r\n")
-	strings.write_bytes(&sb, response.body[:])
-
-	if e := send_stdout(client, request.id, sb); e != nil {
+	if e := send_stdout(client, request.id, &response); e != nil {
 		log.errorf("error in send_stdout: %s", e)
 		return
 	}
@@ -227,7 +214,7 @@ send_get_value_results :: proc(client: RWC, req: Request) -> (err: Error) {
 }
 
 @(require_results)
-send_stdout :: proc(client: RWC, req_id: u16, sb: strings.Builder) -> (err: Error) {
+send_headers :: proc(client: RWC, req_id: u16, response: ^Response) -> (err: Error) {
 	req_id_b1, req_id_b0 := split_u16(req_id)
 
 	h := Header {
@@ -237,19 +224,57 @@ send_stdout :: proc(client: RWC, req_id: u16, sb: strings.Builder) -> (err: Erro
 		type          = .Stdout,
 	}
 
-	chunk_count := len(sb.buf) / CONTENT_BUF_SIZE
-	if len(sb.buf) % CONTENT_BUF_SIZE > 0 {
+	hb: strings.Builder
+	defer delete(hb.buf)
+
+	fmt.sbprintf(&hb, "Status: %d\r\n", response.status)
+
+	// TODO: validate header names
+	for header in response.headers {
+		key, _ := remove_new_lines(header.key, context.allocator)
+		val, _ := remove_new_lines(header.value, context.allocator)
+		fmt.sbprintf(&hb, "%s: %s\r\n", key, val)
+	}
+	strings.write_string(&hb, "\r\n")
+
+	h_len := len(hb.buf)
+	if h_len > CONTENT_BUF_SIZE {
+		return .Record_Too_Large
+	}
+	h.content_length_b1, h.content_length_b0 = split_u16(u16(h_len))
+
+	io.write_ptr(client, &h, size_of(Header))
+	io.write_full(client, hb.buf[:h_len])
+
+	return
+}
+
+@(require_results)
+send_stdout :: proc(client: RWC, req_id: u16, response: ^Response) -> (err: Error) {
+	req_id_b1, req_id_b0 := split_u16(req_id)
+
+	h := Header {
+		request_id_b1 = req_id_b1,
+		request_id_b0 = req_id_b0,
+		version       = VERSION,
+		type          = .Stdout,
+	}
+
+	send_headers(client, req_id, response) or_return
+
+	chunk_count := len(response.body) / CONTENT_BUF_SIZE
+	if len(response.body) % CONTENT_BUF_SIZE > 0 {
 		chunk_count += 1
 	}
 
 	for i in 0 ..< chunk_count {
 		chunk_start := i * CONTENT_BUF_SIZE
 		chunk_end := chunk_start + CONTENT_BUF_SIZE
-		if chunk_end > len(sb.buf) {
-			chunk_end = len(sb.buf)
+		if chunk_end > len(response.body) {
+			chunk_end = len(response.body)
 		}
 
-		chunk := sb.buf[chunk_start:chunk_end]
+		chunk := response.body[chunk_start:chunk_end]
 		h.content_length_b1, h.content_length_b0 = split_u16(u16(len(chunk)))
 		_ = io.write_ptr(client, &h, size_of(h)) or_return
 		_ = io.write_full(client, chunk) or_return
@@ -263,7 +288,6 @@ send_stdout :: proc(client: RWC, req_id: u16, sb: strings.Builder) -> (err: Erro
 	return
 }
 
-// TODO: statuses?
 send_end_request :: proc(client: RWC, req_id: u16) -> (err: Error) {
 	req_id_b1, req_id_b0 := split_u16(req_id)
 
