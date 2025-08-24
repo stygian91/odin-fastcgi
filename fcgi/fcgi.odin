@@ -229,9 +229,10 @@ send_headers :: proc(client: RWC, req_id: u16, response: ^Response) -> (err: Err
 
 	fmt.sbprintf(&hb, "Status: %d\r\n", response.status)
 
-	// TODO: validate header names
 	for header in response.headers {
 		key, _ := remove_new_lines(header.key, context.allocator)
+		is_valid_header_name(key) or_continue
+
 		val, _ := remove_new_lines(header.value, context.allocator)
 		fmt.sbprintf(&hb, "%s: %s\r\n", key, val)
 	}

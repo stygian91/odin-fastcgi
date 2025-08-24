@@ -1,5 +1,6 @@
 package fcgi
 
+import "core:slice"
 import "core:strconv"
 import "core:strings"
 
@@ -121,6 +122,37 @@ write_u32 :: proc(sb: ^strings.Builder, num: u32) -> (n: int) {
 	buf: [32]byte
 	s := strconv.write_bits(buf[:], u64(num), 10, false, 32, strconv.digits, nil)
 	return strings.write_string(sb, s)
+}
+
+@(rodata)
+SPECIAL := [?]rune {
+	'!',
+	'#',
+	'$',
+	'%',
+	'&',
+	'\'',
+	'(',
+	')',
+	'*',
+	'+',
+	'-',
+	'.',
+	'^',
+	'_',
+	'`',
+	'|',
+	'~',
+}
+
+is_valid_header_name :: proc(name: string) -> bool {
+	for r in name {
+		is_alphanum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		is_special := slice.contains(SPECIAL[:], r)
+		if !is_alphanum && !is_special {return false}
+	}
+
+	return true
 }
 
 @(require_results)
