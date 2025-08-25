@@ -66,13 +66,17 @@ main_on_client_accepted :: proc(client_sock: posix.FD) {
 
 	for i in 0 ..< len(SHARED) {
 		state := sync.atomic_load(&SHARED[i])
-		if state == .Idle {
-			send_err := send_fd(client_sock, SOCKET_PAIRS[i][0])
-			if send_err != nil {
-				log.errorf("Error in main sendmsg: %s", posix.get_errno())
-				// TODO: probably send reject record to web server
-				break
-			}
+		if state == .Busy {
+			continue
+		}
+
+		sync.atomic_store(&SHARED[i], .Busy)
+		send_err := send_fd(client_sock, SOCKET_PAIRS[i][0])
+		if send_err != nil {
+			log.errorf("Error in main sendmsg: %s", posix.get_errno())
+			// TODO: probably send reject record to web server
+			sync.atomic_store(&SHARED[i], .Idle)
+			break
 		}
 
 		return
