@@ -2,6 +2,7 @@ package platform
 
 import "base:runtime"
 import "core:c"
+import "core:container/queue"
 import "core:fmt"
 import "core:io"
 import "core:log"
@@ -11,10 +12,12 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:sys/posix"
+import "core:thread"
 
 import conf "../config"
 import "../fcgi"
 import "../logging"
+import "./sem"
 
 DEFAULT_CONFIG_PATH :: "/etc/odin-fcgi/config.ini"
 
@@ -29,8 +32,17 @@ Child_State :: enum int {
 	Busy,
 }
 
+FD_Queue :: struct {
+	queue: queue.Queue(posix.FD),
+	cond:  sync.Cond,
+	mutex: sync.Mutex,
+}
+
 @(private)
 SHARED: ^[]Child_State
+
+QUEUE: FD_Queue
+WORKER_SEMA: ^sem.sem_t
 
 @(private)
 SOCKET_PAIRS: [dynamic][2]posix.FD
@@ -52,6 +64,18 @@ _run :: proc(cfg: ^conf.Config, on_request: fcgi.On_Request) {
 		posix.exit(1)
 	}
 
+	if e := queue.init(&QUEUE.queue, cfg.queue_size); e != nil {
+		log.fatalf("Failed to init queue: %s", e)
+		posix.exit(1)
+	}
+	defer queue.destroy(&QUEUE.queue)
+
+	consumer_thread := thread.create_and_start(main_fd_consumer, context)
+	defer {
+		thread.join(consumer_thread)
+		thread.destroy(consumer_thread)
+	}
+
 	create_sock_err := accept_loop(cfg)
 	if create_sock_err != nil {
 		log.fatalf("Failed to create/bind socket: %s", create_sock_err)
@@ -59,10 +83,36 @@ _run :: proc(cfg: ^conf.Config, on_request: fcgi.On_Request) {
 	}
 }
 
-main_on_client_accepted :: proc(client_sock: posix.FD) {
-	defer posix.close(client_sock)
+main_fd_consumer :: proc() {
+	log.info("FD consumer thread started.")
 
-	log.debugf("client accepted in main: %+v", client_sock)
+	for {
+		log.debug("main fd consumer waiting for lock")
+		sync.lock(&QUEUE.mutex)
+		log.debug("main fd consumer acquired for lock")
+		if queue.len(QUEUE.queue) == 0 {
+			log.debug("main fd consumer waiting for cond")
+			sync.cond_wait(&QUEUE.cond, &QUEUE.mutex)
+			log.debug("main fd consumer acquired cond")
+		}
+		sync.unlock(&QUEUE.mutex)
+
+		log.debug("main fd consumer waiting for sema")
+		sem.wait(WORKER_SEMA)
+		sema_val, _ := sem.getvalue(WORKER_SEMA)
+		log.debugf("main fd consumer sema queue: %v", sema_val)
+		sync.lock(&QUEUE.mutex)
+		cl_sock := queue.pop_front(&QUEUE.queue)
+		sync.unlock(&QUEUE.mutex)
+		log.debugf("Received client in consumer: %v", cl_sock)
+		find_idle_worker(cl_sock)
+	}
+
+	log.info("FD consumer thread exiting.")
+}
+
+find_idle_worker :: proc(client_sock: posix.FD) {
+	defer posix.close(client_sock)
 
 	for i in 0 ..< len(SHARED) {
 		state := sync.atomic_load(&SHARED[i])
@@ -82,8 +132,7 @@ main_on_client_accepted :: proc(client_sock: posix.FD) {
 		return
 	}
 
-	log.error("Did not find an idle worker to handle client")
-	// TODO: do we add it to a queue or maybe send reject fastcgi record?
+	log.errorf("No worker found for socket: %v", client_sock)
 }
 
 cmsg_align :: proc(len: int) -> int {
@@ -137,13 +186,30 @@ accept_loop :: proc(cfg: ^conf.Config) -> (err: posix.Errno) {
 	log.infof("Listening on socket: %s", cfg.sock_path)
 
 	for {
+		log.debug("Waiting to accept new socket")
+
 		cl_sock := posix.accept(serv_sock, nil, nil)
 		if cl_sock < 0 {
 			log.errorf("Error while accepting socket on main: %s", posix.get_errno())
 			continue
 		}
 
-		main_on_client_accepted(cl_sock)
+		log.debugf("Accepted new client socket in main: %v", cl_sock)
+
+		{
+			sync.lock(&QUEUE.mutex)
+
+			if queue.space(QUEUE.queue) == 0 {
+				// TODO: send reject record
+				posix.close(cl_sock)
+				sync.unlock(&QUEUE.mutex)
+				continue
+			}
+
+			queue.push_back(&QUEUE.queue, cl_sock)
+			sync.unlock(&QUEUE.mutex)
+			sync.cond_signal(&QUEUE.cond)
+		}
 	}
 }
 
@@ -185,6 +251,8 @@ create_and_listen :: proc(path: string, backlog: c.int) -> (sock: posix.FD, err:
 	return
 }
 
+SEMA_NAME: cstring : "/fcgi-semaphore"
+
 @(require_results)
 init_worker_processes :: proc(
 	n: int,
@@ -195,6 +263,10 @@ init_worker_processes :: proc(
 ) {
 	SHARED = mmap_shared_slice(Child_State, n) or_return
 	SOCKET_PAIRS = init_socket_pairs(n) or_return
+
+	WORKER_SEMA = init_sema(u32(n)) or_return
+	sema_val, get_err := sem.getvalue(WORKER_SEMA)
+	log.debugf("init sema queue: %v", sema_val, get_err)
 
 	arena: vmem.Arena
 	vmem.arena_init_static(&arena, memory_limit * mem.Megabyte) or_return
@@ -247,11 +319,20 @@ init_child :: proc(n, child_number: int, alloc: mem.Allocator, on_request: fcgi.
 	for {
 		log.debugf("worker %d listening for fd", child_number)
 
+		defer {
+			sync.atomic_store(&SHARED[child_number], .Idle)
+			sem.post(WORKER_SEMA)
+			sema_val, _ := sem.getvalue(WORKER_SEMA)
+			log.debugf("worker %d sema queue post: %v", child_number, sema_val)
+		}
+
 		if res := posix.recvmsg(SOCKET_PAIRS[child_number][1], &msg, {}); res < 0 {
 			log.errorf("Error in worker %d recvmsg: %s", child_number, posix.get_errno())
 			continue
 		}
-		defer sync.atomic_store(&SHARED[child_number], .Idle)
+
+		sema_val, _ := sem.getvalue(WORKER_SEMA)
+		log.debugf("worker %d sema queue after recv: %v", child_number, sema_val)
 
 		cmsg := posix.CMSG_FIRSTHDR(&msg)
 		mem.copy(&client_sock, posix.CMSG_DATA(cmsg), size_of(client_sock))
@@ -270,6 +351,17 @@ init_socket_pairs :: proc(n: int) -> (pairs: [dynamic][2]posix.FD, err: Error) {
 			return pairs, posix.get_errno()
 		}
 	}
+
+	return
+}
+
+init_sema :: proc(value: u32) -> (res: ^sem.sem_t, err: posix.Errno) {
+	if ul_err := sem.unlink(SEMA_NAME); ul_err != nil && ul_err != .ENOENT {
+		err = ul_err
+		return
+	}
+
+	res = sem.open(SEMA_NAME, posix.O_CREAT | posix.O_EXCL, 0o644, value) or_return
 
 	return
 }
