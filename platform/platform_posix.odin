@@ -68,6 +68,7 @@ _run :: proc(cfg: ^conf.Config, on_request: fcgi.On_Request) {
 		log.fatalf("Failed to init queue: %s", e)
 		posix.exit(1)
 	}
+	log.debugf("queue cap: %d", queue.cap(QUEUE.queue))
 	defer queue.destroy(&QUEUE.queue)
 
 	consumer_thread := thread.create_and_start(main_fd_consumer, context)
@@ -87,24 +88,16 @@ main_fd_consumer :: proc() {
 	log.info("FD consumer thread started.")
 
 	for {
-		log.debug("main fd consumer waiting for lock")
 		sync.lock(&QUEUE.mutex)
-		log.debug("main fd consumer acquired for lock")
 		if queue.len(QUEUE.queue) == 0 {
-			log.debug("main fd consumer waiting for cond")
 			sync.cond_wait(&QUEUE.cond, &QUEUE.mutex)
-			log.debug("main fd consumer acquired cond")
 		}
 		sync.unlock(&QUEUE.mutex)
 
-		log.debug("main fd consumer waiting for sema")
 		sem.wait(WORKER_SEMA)
-		sema_val, _ := sem.getvalue(WORKER_SEMA)
-		log.debugf("main fd consumer sema queue: %v", sema_val)
 		sync.lock(&QUEUE.mutex)
 		cl_sock := queue.pop_front(&QUEUE.queue)
 		sync.unlock(&QUEUE.mutex)
-		log.debugf("Received client in consumer: %v", cl_sock)
 		find_idle_worker(cl_sock)
 	}
 
@@ -196,20 +189,18 @@ accept_loop :: proc(cfg: ^conf.Config) -> (err: posix.Errno) {
 
 		log.debugf("Accepted new client socket in main: %v", cl_sock)
 
-		{
-			sync.lock(&QUEUE.mutex)
+		sync.lock(&QUEUE.mutex)
 
-			if queue.space(QUEUE.queue) == 0 {
-				// TODO: send reject record
-				posix.close(cl_sock)
-				sync.unlock(&QUEUE.mutex)
-				continue
-			}
-
-			queue.push_back(&QUEUE.queue, cl_sock)
+		if queue.len(QUEUE.queue) >= cfg.queue_size {
+			// TODO: send reject record
+			posix.close(cl_sock)
 			sync.unlock(&QUEUE.mutex)
-			sync.cond_signal(&QUEUE.cond)
+			continue
 		}
+
+		queue.push_back(&QUEUE.queue, cl_sock)
+		sync.unlock(&QUEUE.mutex)
+		sync.cond_signal(&QUEUE.cond)
 	}
 }
 
@@ -263,10 +254,7 @@ init_worker_processes :: proc(
 ) {
 	SHARED = mmap_shared_slice(Child_State, n) or_return
 	SOCKET_PAIRS = init_socket_pairs(n) or_return
-
 	WORKER_SEMA = init_sema(u32(n)) or_return
-	sema_val, get_err := sem.getvalue(WORKER_SEMA)
-	log.debugf("init sema queue: %v", sema_val, get_err)
 
 	arena: vmem.Arena
 	vmem.arena_init_static(&arena, memory_limit * mem.Megabyte) or_return
@@ -322,17 +310,12 @@ init_child :: proc(n, child_number: int, alloc: mem.Allocator, on_request: fcgi.
 		defer {
 			sync.atomic_store(&SHARED[child_number], .Idle)
 			sem.post(WORKER_SEMA)
-			sema_val, _ := sem.getvalue(WORKER_SEMA)
-			log.debugf("worker %d sema queue post: %v", child_number, sema_val)
 		}
 
 		if res := posix.recvmsg(SOCKET_PAIRS[child_number][1], &msg, {}); res < 0 {
 			log.errorf("Error in worker %d recvmsg: %s", child_number, posix.get_errno())
 			continue
 		}
-
-		sema_val, _ := sem.getvalue(WORKER_SEMA)
-		log.debugf("worker %d sema queue after recv: %v", child_number, sema_val)
 
 		cmsg := posix.CMSG_FIRSTHDR(&msg)
 		mem.copy(&client_sock, posix.CMSG_DATA(cmsg), size_of(client_sock))
