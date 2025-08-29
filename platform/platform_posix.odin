@@ -19,8 +19,6 @@ import "../fcgi"
 import "../logging"
 import "./sem"
 
-DEFAULT_CONFIG_PATH :: "/etc/odin-fcgi/config.ini"
-
 @(private)
 Error :: union #shared_nil {
 	runtime.Allocator_Error,
@@ -68,7 +66,6 @@ _run :: proc(cfg: ^conf.Config, on_request: fcgi.On_Request) {
 		log.fatalf("Failed to init queue: %s", e)
 		posix.exit(1)
 	}
-	log.debugf("queue cap: %d", queue.cap(QUEUE.queue))
 	defer queue.destroy(&QUEUE.queue)
 
 	consumer_thread := thread.create_and_start(main_fd_consumer, context)
@@ -179,15 +176,11 @@ accept_loop :: proc(cfg: ^conf.Config) -> (err: posix.Errno) {
 	log.infof("Listening on socket: %s", cfg.sock_path)
 
 	for {
-		log.debug("Waiting to accept new socket")
-
 		cl_sock := posix.accept(serv_sock, nil, nil)
 		if cl_sock < 0 {
 			log.errorf("Error while accepting socket on main: %s", posix.get_errno())
 			continue
 		}
-
-		log.debugf("Accepted new client socket in main: %v", cl_sock)
 
 		sync.lock(&QUEUE.mutex)
 
@@ -242,6 +235,7 @@ create_and_listen :: proc(path: string, backlog: c.int) -> (sock: posix.FD, err:
 	return
 }
 
+// TODO: use config instead
 SEMA_NAME: cstring : "/fcgi-semaphore"
 
 @(require_results)
@@ -305,8 +299,6 @@ init_child :: proc(n, child_number: int, alloc: mem.Allocator, on_request: fcgi.
 	msg.msg_iovlen = 1
 
 	for {
-		log.debugf("worker %d listening for fd", child_number)
-
 		defer {
 			sync.atomic_store(&SHARED[child_number], .Idle)
 			sem.post(WORKER_SEMA)
@@ -319,7 +311,6 @@ init_child :: proc(n, child_number: int, alloc: mem.Allocator, on_request: fcgi.
 
 		cmsg := posix.CMSG_FIRSTHDR(&msg)
 		mem.copy(&client_sock, posix.CMSG_DATA(cmsg), size_of(client_sock))
-		log.debugf("Client %d received fd: %+v", child_number, client_sock)
 
 		stream := os.stream_from_handle(os.Handle(client_sock))
 		fcgi.on_client_accepted(io.to_read_write_closer(stream), alloc, on_request)
@@ -345,11 +336,10 @@ init_sema :: proc(value: u32) -> (res: ^sem.sem_t, err: posix.Errno) {
 	}
 
 	res = sem.open(SEMA_NAME, posix.O_CREAT | posix.O_EXCL, 0o644, value) or_return
-
 	return
 }
 
-mmap_shared_slice :: proc($T: typeid, n: int) -> (s: ^[]T, err: posix.Errno) {
+mmap_shared_slice :: proc "contextless" ($T: typeid, n: int) -> (s: ^[]T, err: posix.Errno) {
 	addr: rawptr
 	size := (uint(size_of(T)) * uint(n)) + uint(size_of(runtime.Raw_Slice))
 
