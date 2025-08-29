@@ -150,7 +150,7 @@ send_fd :: proc(fd: posix.FD, sock: posix.FD) -> posix.Errno {
 	msg.msg_iovlen = 1
 
 	msg.msg_control = raw_data(buf)
-	msg.msg_controllen = uint(buf_len)
+	msg.msg_controllen = posix.socklen_t(buf_len)
 
 	cmsg := posix.CMSG_FIRSTHDR(&msg)
 	if cmsg == nil {
@@ -248,7 +248,7 @@ init_worker_processes :: proc(
 ) {
 	SHARED = mmap_shared_slice(Child_State, n) or_return
 	SOCKET_PAIRS = init_socket_pairs(n) or_return
-	WORKER_SEMA = init_sema(u32(n)) or_return
+	WORKER_SEMA = init_worker_semaphore(u32(n)) or_return
 
 	arena: vmem.Arena
 	vmem.arena_init_static(&arena, memory_limit * mem.Megabyte) or_return
@@ -329,7 +329,7 @@ init_socket_pairs :: proc(n: int) -> (pairs: [dynamic][2]posix.FD, err: Error) {
 	return
 }
 
-init_sema :: proc(value: u32) -> (res: ^sem.sem_t, err: posix.Errno) {
+init_worker_semaphore :: proc(value: u32) -> (res: ^sem.sem_t, err: posix.Errno) {
 	if ul_err := sem.unlink(SEMA_NAME); ul_err != nil && ul_err != .ENOENT {
 		err = ul_err
 		return
