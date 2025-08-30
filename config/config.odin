@@ -9,6 +9,7 @@ import "core:strings"
 Config :: struct {
 	sock_path:    string,
 	log_path:     string,
+	sem_path:     string,
 	backlog:      int,
 	worker_count: int,
 	queue_size:   int,
@@ -19,6 +20,7 @@ Config :: struct {
 DEFAULT_CONFIG :: Config {
 	backlog      = 5,
 	worker_count = 4,
+	sem_path     = "/fcgi-semaphore",
 	queue_size   = 8,
 	memory_limit = 256,
 }
@@ -43,6 +45,8 @@ load_from_file :: proc(path: string) -> (cfg: Config, err: Error) {
 
 	cfg.sock_path = _get_required(m, "sock_path") or_return
 	cfg.log_path = _get_required(m, "log_path") or_return
+	cfg.sem_path = strings.clone(m["sem_path"] or_else DEFAULT_CONFIG.sem_path)
+
 	cfg.backlog = strconv.parse_int(m["backlog"], 10) or_else DEFAULT_CONFIG.backlog
 	cfg.worker_count = strconv.parse_int(m["worker_count"], 10) or_else DEFAULT_CONFIG.worker_count
 	cfg.queue_size = strconv.parse_int(m["queue_size"], 10) or_else DEFAULT_CONFIG.queue_size

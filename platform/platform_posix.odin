@@ -57,7 +57,7 @@ _run :: proc(cfg: ^conf.Config, on_request: fcgi.On_Request) {
 	// ignore sigpipe signal
 	posix.signal(.SIGPIPE, cast(proc "c" (_: posix.Signal))posix.SIG_IGN)
 
-	if e := init_worker_processes(cfg.worker_count, cfg.memory_limit, on_request); e != nil {
+	if e := init_worker_processes(cfg, on_request); e != nil {
 		log.fatalf("Failed to init workers: %s", e)
 		posix.exit(1)
 	}
@@ -150,7 +150,7 @@ send_fd :: proc(fd: posix.FD, sock: posix.FD) -> posix.Errno {
 	msg.msg_iovlen = 1
 
 	msg.msg_control = raw_data(buf)
-	msg.msg_controllen = posix.socklen_t(buf_len)
+	msg.msg_controllen = auto_cast buf_len
 
 	cmsg := posix.CMSG_FIRSTHDR(&msg)
 	if cmsg == nil {
@@ -235,33 +235,24 @@ create_and_listen :: proc(path: string, backlog: c.int) -> (sock: posix.FD, err:
 	return
 }
 
-// TODO: use config instead
-SEMA_NAME: cstring : "/fcgi-semaphore"
-
 @(require_results)
-init_worker_processes :: proc(
-	n: int,
-	memory_limit: uint,
-	on_request: fcgi.On_Request,
-) -> (
-	err: Error,
-) {
-	SHARED = mmap_shared_slice(Child_State, n) or_return
-	SOCKET_PAIRS = init_socket_pairs(n) or_return
-	WORKER_SEMA = init_worker_semaphore(u32(n)) or_return
+init_worker_processes :: proc(cfg: ^conf.Config, on_request: fcgi.On_Request) -> (err: Error) {
+	SHARED = mmap_shared_slice(Child_State, cfg.worker_count) or_return
+	SOCKET_PAIRS = init_socket_pairs(cfg.worker_count) or_return
+	WORKER_SEMA = init_worker_semaphore(u32(cfg.worker_count), cfg.sem_path) or_return
 
 	arena: vmem.Arena
-	vmem.arena_init_static(&arena, memory_limit * mem.Megabyte) or_return
+	vmem.arena_init_static(&arena, cfg.memory_limit * mem.Megabyte) or_return
 	alloc := vmem.arena_allocator(&arena)
 
-	for i in 0 ..< n {
+	for i in 0 ..< cfg.worker_count {
 		pid := posix.fork()
 		if pid < 0 {
 			return posix.get_errno()
 		}
 
 		if pid == 0 {
-			init_child(n, i, alloc, on_request)
+			init_child(cfg.worker_count, i, alloc, on_request)
 			posix.exit(0)
 		}
 
@@ -329,13 +320,20 @@ init_socket_pairs :: proc(n: int) -> (pairs: [dynamic][2]posix.FD, err: Error) {
 	return
 }
 
-init_worker_semaphore :: proc(value: u32) -> (res: ^sem.sem_t, err: posix.Errno) {
-	if ul_err := sem.unlink(SEMA_NAME); ul_err != nil && ul_err != .ENOENT {
+init_worker_semaphore :: proc(
+	value: u32,
+	sema_name: string,
+) -> (
+	res: ^sem.sem_t,
+	err: posix.Errno,
+) {
+	_name := strings.clone_to_cstring(sema_name)
+	if ul_err := sem.unlink(_name); ul_err != nil && ul_err != .ENOENT {
 		err = ul_err
 		return
 	}
 
-	res = sem.open(SEMA_NAME, posix.O_CREAT | posix.O_EXCL, 0o644, value) or_return
+	res = sem.open(_name, posix.O_CREAT | posix.O_EXCL, 0o644, value) or_return
 	return
 }
 
