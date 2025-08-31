@@ -88,8 +88,6 @@ process_request :: proc(
 		done, read_err := read_record_into_request(client, &request)
 		if read_err != nil {
 			log.errorf("Error while reading record into request: %s", read_err)
-			// TODO: disambiguate errors and add more info to log
-			// TODO: sending any potential responses back to the web server
 			return
 		}
 

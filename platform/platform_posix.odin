@@ -17,7 +17,6 @@ import "core:thread"
 import conf "../config"
 import "../fcgi"
 import "../logging"
-import "../types"
 import "./sem"
 
 @(private)
@@ -98,9 +97,7 @@ accept_loop :: proc(cfg: ^conf.Config) -> (err: posix.Errno) {
 
 		if queue.len(QUEUE.queue) >= cfg.queue_size {
 			sync.unlock(&QUEUE.mutex)
-			if rej_err := reject_request(cl_sock); rej_err != nil {
-				log.errorf("Error while rejecting request: %s", rej_err)
-			}
+			posix.close(cl_sock)
 			continue
 		}
 
@@ -143,7 +140,6 @@ find_idle_worker :: proc(client_sock: posix.FD) {
 		send_err := send_fd(client_sock, SOCKET_PAIRS[i][0])
 		if send_err != nil {
 			log.errorf("Error in main sendmsg: %s", posix.get_errno())
-			// TODO: probably send reject record to web server
 			sync.atomic_store(&SHARED[i], .Idle)
 			break
 		}
@@ -358,22 +354,4 @@ cmsg_align :: proc(len: int) -> int {
 
 cmsg_space :: proc(len: int) -> int {
 	return cmsg_align(len) + cmsg_align(size_of(posix.cmsghdr))
-}
-
-// assumes the FCGI record header has not been read yet
-@(require_results)
-reject_request :: proc(cl_sock: posix.FD) -> (err: types.Error) {
-	defer posix.close(cl_sock)
-	cl_stream := os.stream_from_handle(cast(os.Handle)cl_sock)
-
-	header: types.Header
-	_ = io.read_ptr(cl_stream, &header, size_of(types.Header)) or_return
-
-	fcgi.send_end_request(
-		cl_stream,
-		fcgi.combine_u16(header.request_id_b1, header.request_id_b0),
-		.Overloaded,
-	)
-
-	return
 }
