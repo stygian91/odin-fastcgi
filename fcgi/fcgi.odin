@@ -144,7 +144,7 @@ read_record_into_request :: proc(client: RWC, req: ^Request) -> (done: bool, err
 		b: Begin_Request_Body
 		_ = io.read_ptr(client, &b, content_len) or_return
 		req.id = combine_u16(header.request_id_b1, header.request_id_b0)
-		// if the protocol uses 2 bytes for the roles but there are currently only 3 roles
+		// the protocol uses 2 bytes for the roles but there are currently only 3 roles
 		req.role = cast(Role)b.role_b0
 		req.flags = b.flags
 
@@ -301,7 +301,13 @@ send_stdout :: proc(client: RWC, req_id: u16, response: ^Response) -> (err: Erro
 	return
 }
 
-send_end_request :: proc(client: RWC, req_id: u16) -> (err: Error) {
+send_end_request :: proc(
+	client: RWC,
+	req_id: u16,
+	protcol_status: Protocol_Status = .Request_Complete,
+) -> (
+	err: Error,
+) {
 	req_id_b1, req_id_b0 := split_u16(req_id)
 
 	header_out := Header {
@@ -311,7 +317,9 @@ send_end_request :: proc(client: RWC, req_id: u16) -> (err: Error) {
 		type              = .End_Request,
 		content_length_b0 = u8(size_of(End_Request_Body)),
 	}
-	body := End_Request_Body{}
+	body := End_Request_Body {
+		protocol_status = protcol_status,
+	}
 
 	_ = io.write_ptr(client, &header_out, size_of(Header)) or_return
 	_ = io.write_ptr(client, &body, size_of(End_Request_Body)) or_return
