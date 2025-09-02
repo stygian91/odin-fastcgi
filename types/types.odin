@@ -190,7 +190,14 @@ Http_Status :: enum int {
 Response :: struct {
 	status:  Http_Status,
 	headers: [dynamic]Http_Header,
-	body:    [dynamic]u8,
+	body:    Response_Body,
 }
+
+Response_Body :: union {
+	[dynamic]u8,
+	Body_Stream,
+}
+
+Body_Stream :: io.Stream
 
 On_Request :: proc(req: ^Request) -> (res: Response)

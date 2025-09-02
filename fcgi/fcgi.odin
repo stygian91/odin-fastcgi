@@ -261,7 +261,7 @@ send_headers :: proc(client: RWC, req_id: u16, response: ^Response) -> (err: Err
 }
 
 @(require_results)
-send_stdout :: proc(client: RWC, req_id: u16, response: ^Response) -> (err: Error) {
+send_stdout_preallocated :: proc(client: RWC, req_id: u16, response: ^Response) -> (err: Error) {
 	req_id_b1, req_id_b0 := split_u16(req_id)
 
 	h := Header {
@@ -273,19 +273,21 @@ send_stdout :: proc(client: RWC, req_id: u16, response: ^Response) -> (err: Erro
 
 	send_headers(client, req_id, response) or_return
 
-	chunk_count := len(response.body) / CONTENT_BUF_SIZE
-	if len(response.body) % CONTENT_BUF_SIZE > 0 {
+	body := response.body.([dynamic]u8)
+
+	chunk_count := len(body) / CONTENT_BUF_SIZE
+	if len(body) % CONTENT_BUF_SIZE > 0 {
 		chunk_count += 1
 	}
 
 	for i in 0 ..< chunk_count {
 		chunk_start := i * CONTENT_BUF_SIZE
 		chunk_end := chunk_start + CONTENT_BUF_SIZE
-		if chunk_end > len(response.body) {
-			chunk_end = len(response.body)
+		if chunk_end > len(body) {
+			chunk_end = len(body)
 		}
 
-		chunk := response.body[chunk_start:chunk_end]
+		chunk := body[chunk_start:chunk_end]
 		h.content_length_b1, h.content_length_b0 = split_u16(u16(len(chunk)))
 		_ = io.write_ptr(client, &h, size_of(h)) or_return
 		_ = io.write_full(client, chunk) or_return
@@ -295,6 +297,19 @@ send_stdout :: proc(client: RWC, req_id: u16, response: ^Response) -> (err: Erro
 
 	h.content_length_b1, h.content_length_b0 = 0, 0
 	_ = io.write_ptr(client, &h, size_of(h)) or_return
+
+	return
+}
+
+@(require_results)
+send_stdout :: proc(client: RWC, req_id: u16, response: ^Response) -> (err: Error) {
+	switch b in response.body {
+	case [dynamic]u8:
+		return send_stdout_preallocated(client, req_id, response)
+	case t.Body_Stream:
+		// TODO: stream
+		return
+	}
 
 	return
 }

@@ -19,6 +19,7 @@ sem_t :: struct #raw_union {
 	align: c.long,
 }
 
+@(private="file")
 foreign lib {
 	sem_open :: proc(name: cstring, oflag: c.int, #c_vararg args: ..any) -> ^sem_t ---
 	sem_init :: proc(sem: ^sem_t, pshared: c.int, value: c.uint) -> c.int ---
